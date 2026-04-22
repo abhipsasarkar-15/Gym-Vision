@@ -5,9 +5,17 @@ import Accelerate.vImage
 import CoreVideo.CVPixelBuffer
 import Accelerate.vecLib
 import CoreImage.CIContext
+#if canImport(MediaPipeTasksVision)
 import MediaPipeTasksVision
+#endif
 
-public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate, AVAssetWriterDelegate, AVCaptureFileOutputRecordingDelegate, PoseLandmarkerLiveStreamDelegate {
+#if canImport(MediaPipeTasksVision)
+typealias CameraMacosPoseDelegate = PoseLandmarkerLiveStreamDelegate
+#else
+protocol CameraMacosPoseDelegate {}
+#endif
+
+public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate, AVAssetWriterDelegate, AVCaptureFileOutputRecordingDelegate, CameraMacosPoseDelegate {
     
     let registry: FlutterTextureRegistry
     let outputChannel: FlutterMethodChannel!
@@ -68,7 +76,9 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
     var zoomLevel:Double = 1.0
     var zoomPixelBuffer: CVImageBuffer?
     let ciContext = CIContext()
+    #if canImport(MediaPipeTasksVision)
     var poseLandmarker: PoseLandmarker?
+    #endif
     var poseFrameCounter: Int = 0
     var isPoseInferenceInFlight = false
     
@@ -265,6 +275,7 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
         return flippedBuffer
     }
 
+    #if canImport(MediaPipeTasksVision)
     private func poseModelURL() -> URL? {
         let pluginBundle = Bundle(for: CameraMacosPlugin.self)
         if let directURL = pluginBundle.url(forResource: "pose_landmarker_full", withExtension: "task") {
@@ -308,7 +319,38 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
             }
         }
     }
+    #else
+    private func configurePoseLandmarker() {
+        isPoseInferenceInFlight = false
+    }
 
+    private func emitPoseResult(
+        _ result: Any? = nil,
+        timestampInMilliseconds: Int,
+        error: Error? = nil
+    ) {
+        var payload: [String: Any] = [
+            "timestampMs": timestampInMilliseconds,
+            "overallConfidence": 0.0,
+            "landmarks": [],
+            "worldLandmarks": [],
+        ]
+
+        if let error = error {
+            payload["error"] = FlutterError(
+                code: "POSE_LANDMARKER_RUNTIME_ERROR",
+                message: error.localizedDescription,
+                details: nil
+            ).toMap
+        }
+
+        DispatchQueue.main.async {
+            self.outputChannel.invokeMethod("onPoseResult", arguments: payload)
+        }
+    }
+    #endif
+
+    #if canImport(MediaPipeTasksVision)
     private func emitPoseResult(
         _ result: PoseLandmarkerResult?,
         timestampInMilliseconds: Int,
@@ -370,6 +412,7 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
             self.outputChannel.invokeMethod("onPoseResult", arguments: payload)
         }
     }
+    #endif
 
     func setFocusPoint(_ arguments: Dictionary<String, Any>, _ result: @escaping FlutterResult) {
         // var capturedVideoDevices: [AVCaptureDevice] = []
@@ -507,7 +550,9 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
         self.requestPermission { granted in
             if granted {
                 self.isDestroyed = false
+                #if canImport(MediaPipeTasksVision)
                 self.poseLandmarker = nil
+                #endif
                 self.isPoseInferenceInFlight = false
                 self.poseFrameCounter = 0
                 self.textureId = self.registry.register(self)
@@ -1248,7 +1293,9 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
         self.captureSession = nil
         self.videoDevice = nil
         self.textureId = nil
+        #if canImport(MediaPipeTasksVision)
         self.poseLandmarker = nil
+        #endif
         self.isPoseInferenceInFlight = false
         self.poseFrameCounter = 0
         
@@ -1277,6 +1324,7 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
             latestBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
             registry.textureFrameAvailable(textureId)
             poseFrameCounter += 1
+            #if canImport(MediaPipeTasksVision)
             if poseFrameCounter >= 3 {
                 poseFrameCounter = 0
                 if let poseLandmarker = self.poseLandmarker, !isPoseInferenceInFlight {
@@ -1291,6 +1339,7 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
                     }
                 }
             }
+            #endif
         }
         
         if !self.useMovieFileOutput, isRecording, let captureSession = self.captureSession, captureSession.isRunning, let videoWriter = self.videoWriter, let videoOutputQueue = videoOutputQueue,
@@ -1338,6 +1387,7 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
         }
     }
 
+    #if canImport(MediaPipeTasksVision)
     public func poseLandmarker(
         _ poseLandmarker: PoseLandmarker,
         didFinishDetection result: PoseLandmarkerResult?,
@@ -1347,6 +1397,7 @@ public class CameraMacosPlugin: NSObject, FlutterPlugin, FlutterTexture, AVCaptu
         isPoseInferenceInFlight = false
         emitPoseResult(result, timestampInMilliseconds: timestampInMilliseconds, error: error)
     }
+    #endif
     
     // MOVIE FILE OUTPUT MODE
     public func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {

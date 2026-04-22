@@ -17,6 +17,7 @@ import 'package:video_player/video_player.dart';
 
 import 'platform_file.dart';
 import 'platform_video_controller.dart';
+import 'voice_coach.dart';
 
 const String kUserName = 'Priya';
 const String kShareAssetRoute = '/share-asset';
@@ -27,6 +28,18 @@ const bool kStartInRecording = bool.fromEnvironment(
   'START_IN_RECORDING',
   defaultValue: false,
 );
+const String kGeminiApiKey = String.fromEnvironment('GEMINI_API_KEY');
+const String kGeminiModel = String.fromEnvironment(
+  'GEMINI_MODEL',
+  defaultValue: 'gemini-2.5-flash',
+);
+const Color kKioskPaper = Color(0xFFE8E6E4);
+const Color kKioskPaperSoft = Color(0xFFF5F3F1);
+const Color kKioskInk = Color(0xFF18090B);
+const Color kKioskInkMuted = Color(0xFF575156);
+const Color kKioskStroke = Color(0xFFD0CBC7);
+const Color kKioskCard = Color(0xFFD5D2D0);
+const Color kKioskButtonAccent = Color(0xFFFFA367);
 
 const Curve kVoidEase = Cubic(0.16, 1, 0.3, 1);
 const Duration kVoidFast = Duration(milliseconds: 100);
@@ -190,8 +203,11 @@ class CultVisionApp extends StatelessWidget {
 
 enum KioskScreen {
   idle,
+  authTap,
+  welcome,
   onboarding,
   tips,
+  countdown,
   recording,
   preview,
   uploading,
@@ -485,7 +501,7 @@ class VoidTextAction extends StatelessWidget {
     required this.label,
     required this.onTap,
     this.icon,
-    this.color = AppPalette.n400,
+    this.color = kKioskInkMuted,
   });
 
   final String label;
@@ -573,6 +589,7 @@ class _KioskFlowPageState extends State<KioskFlowPage> {
       ? KioskScreen.recording
       : KioskScreen.idle;
   bool _hasOnboarded = false;
+  bool _showFullTipsWalkthrough = true;
   bool _nextUserWaiting = false;
   String? _cameraError;
   String? _queuedUploadNotice;
@@ -597,12 +614,24 @@ class _KioskFlowPageState extends State<KioskFlowPage> {
   }
 
   void _handleScan() {
-    _goTo(_hasOnboarded ? KioskScreen.tips : KioskScreen.onboarding);
+    _goTo(KioskScreen.authTap);
+  }
+
+  void _handleAuthComplete() {
+    _goTo(KioskScreen.welcome);
+  }
+
+  void _handleWelcomeContinue() {
+    setState(() {
+      _showFullTipsWalkthrough = !_hasOnboarded;
+      _screen = _hasOnboarded ? KioskScreen.tips : KioskScreen.onboarding;
+    });
   }
 
   void _handleOnboardingAccept() {
     setState(() {
       _hasOnboarded = true;
+      _showFullTipsWalkthrough = true;
       _screen = KioskScreen.tips;
     });
   }
@@ -610,6 +639,12 @@ class _KioskFlowPageState extends State<KioskFlowPage> {
   void _handleRecordingStart() {
     setState(() {
       _cameraError = null;
+      _screen = KioskScreen.countdown;
+    });
+  }
+
+  void _handleCountdownComplete() {
+    setState(() {
       _screen = KioskScreen.recording;
     });
   }
@@ -654,6 +689,8 @@ class _KioskFlowPageState extends State<KioskFlowPage> {
     setState(() {
       _screen = KioskScreen.idle;
       _cameraError = null;
+      _queuedUploadNotice = null;
+      _nextUserWaiting = false;
     });
   }
 
@@ -687,6 +724,17 @@ class _KioskFlowPageState extends State<KioskFlowPage> {
     switch (_screen) {
       case KioskScreen.idle:
         return IdleScreen(key: const ValueKey('idle'), onScan: _handleScan);
+      case KioskScreen.authTap:
+        return AuthTapScreen(
+          key: const ValueKey('auth_tap'),
+          onAuthenticated: _handleAuthComplete,
+        );
+      case KioskScreen.welcome:
+        return WelcomeScreen(
+          key: const ValueKey('welcome'),
+          userName: kUserName,
+          onContinue: _handleWelcomeContinue,
+        );
       case KioskScreen.onboarding:
         return OnboardingScreen(
           key: const ValueKey('onboarding'),
@@ -698,7 +746,14 @@ class _KioskFlowPageState extends State<KioskFlowPage> {
           key: const ValueKey('tips'),
           userName: kUserName,
           cameraError: _cameraError,
+          showFullWalkthrough: _showFullTipsWalkthrough,
           onReady: _handleRecordingStart,
+        );
+      case KioskScreen.countdown:
+        return CountdownScreen(
+          key: const ValueKey('countdown'),
+          exerciseName: _sessionData.exerciseName,
+          onFinished: _handleCountdownComplete,
         );
       case KioskScreen.recording:
         return RecordingScreen(
@@ -726,9 +781,10 @@ class _KioskFlowPageState extends State<KioskFlowPage> {
         return CultAppScreen(
           key: const ValueKey('cult_app'),
           userName: kUserName,
+          session: _sessionData,
           onOpenAsset: () => _goTo(KioskScreen.shareAsset),
           nextUserWaiting: _nextUserWaiting,
-          onRecordNext: () => _goTo(KioskScreen.tips),
+          onRecordNext: _handleReturnToIdle,
           onEndSession: _handleReturnToIdle,
           queuedUploadNotice: _queuedUploadNotice,
           onToggleNextUser: () {
@@ -741,27 +797,58 @@ class _KioskFlowPageState extends State<KioskFlowPage> {
         return ShareableAssetScreen(
           key: const ValueKey('share_asset'),
           session: _sessionData,
-          onRecordNext: () => _goTo(KioskScreen.tips),
+          onBack: () => _goTo(KioskScreen.cultApp),
+          onRecordNext: _handleReturnToIdle,
         );
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final bool isCultAppSurface =
+        _screen == KioskScreen.cultApp || _screen == KioskScreen.shareAsset;
+
     return Scaffold(
       body: DecoratedBox(
-        decoration: const BoxDecoration(color: AppPalette.voidColor),
+        decoration: BoxDecoration(
+          color: isCultAppSurface ? AppPalette.voidColor : kKioskPaper,
+        ),
         child: Stack(
           fit: StackFit.expand,
           children: [
-            const AmbientBackdrop(),
+            if (isCultAppSurface)
+              const AmbientBackdrop()
+            else
+              const _KioskPhaseBackdrop(),
             SafeArea(
-              child: KeyedSubtree(
-                key: ValueKey<KioskScreen>(_screen),
-                child: _screenForState(),
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 430),
+                  child: KeyedSubtree(
+                    key: ValueKey<KioskScreen>(_screen),
+                    child: _screenForState(),
+                  ),
+                ),
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _KioskPhaseBackdrop extends StatelessWidget {
+  const _KioskPhaseBackdrop();
+
+  @override
+  Widget build(BuildContext context) {
+    return const DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [kKioskPaper, Color(0xFFE2DEDB), kKioskPaper],
         ),
       ),
     );
@@ -901,45 +988,290 @@ class IdleScreen extends StatelessWidget {
       behavior: HitTestBehavior.opaque,
       onTap: onScan,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 20),
+        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 28),
         child: Column(
           children: [
-            const SizedBox(height: 12),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+            const Spacer(),
+            Column(
               children: const [
-                BrandMark(),
-                SizedBox(width: 12),
-                StatusPill(label: 'Idle', dotColor: AppPalette.n700),
+                Text(
+                  'cult\nvision',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: kKioskInk,
+                    fontSize: 58,
+                    fontWeight: FontWeight.w900,
+                    height: 0.92,
+                    letterSpacing: -2.2,
+                  ),
+                ),
+                SizedBox(height: 24),
+                Text(
+                  'Let’s make your\nbarbell deadlift super fun',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: kKioskInkMuted,
+                    fontSize: 18,
+                    height: 1.35,
+                    letterSpacing: -0.4,
+                  ),
+                ),
+                SizedBox(height: 34),
+                Text(
+                  'Tap your phone to begin',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: kKioskInk,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ],
             ),
             const Spacer(),
-            Column(children: const [BreathingQrFrame(), SizedBox(height: 24)]),
-            ConstrainedBox(
-              constraints: BoxConstraints(maxWidth: 160),
-              child: Text(
-                'Open the Cult app and scan to start',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: AppPalette.n400,
-                  fontSize: 12,
-                  height: 1.6,
-                  letterSpacing: -0.12,
-                ),
-              ),
-            ),
-            const Spacer(),
+            PrimaryButton(label: 'Tap Phone To Start', onPressed: onScan),
+            const SizedBox(height: 16),
             const Text(
-              'CHECKED-IN MEMBERS ONLY',
+              'State 0 · checked-in members only',
               style: TextStyle(
-                color: AppPalette.n700,
-                fontSize: 9,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 2.1,
+                color: kKioskInkMuted,
+                fontSize: 11,
+                letterSpacing: 0.3,
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class AuthTapScreen extends StatefulWidget {
+  const AuthTapScreen({
+    super.key,
+    required this.onAuthenticated,
+  });
+
+  final VoidCallback onAuthenticated;
+
+  @override
+  State<AuthTapScreen> createState() => _AuthTapScreenState();
+}
+
+class _AuthTapScreenState extends State<AuthTapScreen> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer(const Duration(milliseconds: 1600), () {
+      if (mounted) {
+        widget.onAuthenticated();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 28),
+      child: Column(
+        children: [
+          const Spacer(),
+          const Text(
+            "Let's get\nstarted",
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: kKioskInk,
+              fontSize: 54,
+              fontWeight: FontWeight.w900,
+              height: 0.96,
+              letterSpacing: -2.4,
+            ),
+          ),
+          const SizedBox(height: 28),
+          const Text(
+            'Hold your phone to the device\nChecked-in members only',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: kKioskInkMuted,
+              fontSize: 18,
+              height: 1.35,
+              letterSpacing: -0.4,
+            ),
+          ),
+          const SizedBox(height: 34),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 18),
+            decoration: BoxDecoration(
+              color: kKioskPaperSoft,
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: kKioskStroke),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.2,
+                    valueColor: AlwaysStoppedAnimation<Color>(kKioskInk),
+                  ),
+                ),
+                SizedBox(width: 12),
+                Text(
+                  'Authenticating membership',
+                  style: TextStyle(
+                    color: kKioskInk,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Spacer(),
+        ],
+      ),
+    );
+  }
+}
+
+class WelcomeScreen extends StatelessWidget {
+  const WelcomeScreen({
+    super.key,
+    required this.userName,
+    required this.onContinue,
+  });
+
+  final String userName;
+  final VoidCallback onContinue;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 28),
+      child: Column(
+        children: [
+          const Spacer(),
+          Text(
+            'Welcome\n$userName',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: kKioskInk,
+              fontSize: 54,
+              fontWeight: FontWeight.w900,
+              height: 0.96,
+              letterSpacing: -2.4,
+            ),
+          ),
+          const SizedBox(height: 24),
+          const Text(
+            'Ready when you are.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: kKioskInkMuted,
+              fontSize: 18,
+              height: 1.35,
+            ),
+          ),
+          const Spacer(),
+          PrimaryButton(label: "Let's go", onPressed: onContinue),
+          const SizedBox(height: 12),
+        ],
+      ),
+    );
+  }
+}
+
+class CountdownScreen extends StatefulWidget {
+  const CountdownScreen({
+    super.key,
+    required this.exerciseName,
+    required this.onFinished,
+  });
+
+  final String exerciseName;
+  final VoidCallback onFinished;
+
+  @override
+  State<CountdownScreen> createState() => _CountdownScreenState();
+}
+
+class _CountdownScreenState extends State<CountdownScreen> {
+  Timer? _timer;
+  int _count = 3;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (_count == 1) {
+        timer.cancel();
+        widget.onFinished();
+      } else {
+        setState(() {
+          _count -= 1;
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 28),
+      child: Column(
+        children: [
+          const SizedBox(height: 14),
+          Text(
+            widget.exerciseName,
+            style: const TextStyle(
+              color: kKioskInk,
+              fontSize: 24,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -0.5,
+            ),
+          ),
+          const Spacer(),
+          const Text(
+            'recording in...',
+            style: TextStyle(
+              color: kKioskInkMuted,
+              fontSize: 28,
+              fontWeight: FontWeight.w400,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            '$_count',
+            style: const TextStyle(
+              color: kKioskInk,
+              fontSize: 132,
+              fontWeight: FontWeight.w900,
+              height: 0.92,
+              letterSpacing: -4,
+            ),
+          ),
+          const Spacer(),
+        ],
       ),
     );
   }
@@ -1062,100 +1394,35 @@ class OnboardingScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 20),
+      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 28),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          const SizedBox(height: 20),
-          Row(
-            children: [
-              GlassAvatar(letter: userName.characters.first),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Text(
-                  'Hey $userName.',
-                  style: const TextStyle(
-                    fontSize: 36,
-                    fontWeight: FontWeight.w800,
-                    height: 1.02,
-                    letterSpacing: -1.4,
-                  ),
-                ),
-              ),
-            ],
-          ),
           const Spacer(),
-          const Column(
-            children: [
-              GuidanceRow(
-                icon: LucideIcons.move,
-                text: 'Stand 2 metres away, side-on to the camera.',
-              ),
-              SizedBox(height: 24),
-              GuidanceRow(
-                icon: LucideIcons.video,
-                text: 'We record your set only, not between sets.',
-              ),
-              SizedBox(height: 24),
-              GuidanceRow(
-                icon: LucideIcons.badgeCheck,
-                text: 'Your video goes straight to your Cult app.',
-              ),
-            ],
-          ),
-          const SizedBox(height: 28),
-          const GlassPanel(
-            padding: EdgeInsets.all(18),
-            backgroundColor: AppPalette.passGlass,
-            borderColor: AppPalette.passBorder,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                VoidIcon(
-                  LucideIcons.shieldCheck,
-                  color: AppPalette.passBright,
-                  size: VoidIconSize.interactive,
-                ),
-                SizedBox(width: 12),
-                Expanded(
-                  child: Text.rich(
-                    TextSpan(
-                      text:
-                          'Background is always blurred. No one else in frame will appear in your video. ',
-                      style: TextStyle(
-                        color: AppPalette.n300,
-                        fontSize: 14,
-                        height: 1.55,
-                      ),
-                      children: [
-                        TextSpan(
-                          text: 'Ever.',
-                          style: TextStyle(
-                            color: AppPalette.passBright,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
+          const Text(
+            'T&C',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: kKioskInk,
+              fontSize: 54,
+              fontWeight: FontWeight.w900,
+              height: 0.96,
+              letterSpacing: -2.2,
             ),
           ),
           const SizedBox(height: 22),
           const Text(
-            'By recording, you agree to our terms.',
-            style: TextStyle(color: AppPalette.n500, fontSize: 12),
-          ),
-          const SizedBox(height: 20),
-          PrimaryButton(label: "Got it, let's go", onPressed: onAccept),
-          const SizedBox(height: 14),
-          const Center(
-            child: Text(
-              'Read full terms',
-              style: TextStyle(color: AppPalette.n400, fontSize: 12),
+            'Per user there should be only one session.\nBy continuing, you agree to recording this set and sending the processed result to your Cult app.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: kKioskInkMuted,
+              fontSize: 18,
+              height: 1.45,
+              letterSpacing: -0.3,
             ),
           ),
+          const Spacer(),
+          PrimaryButton(label: "Accept all terms and continue", onPressed: onAccept),
           const SizedBox(height: 12),
         ],
       ),
@@ -1169,105 +1436,91 @@ class TipsScreen extends StatefulWidget {
     required this.userName,
     required this.onReady,
     required this.cameraError,
+    required this.showFullWalkthrough,
   });
 
   final String userName;
   final VoidCallback onReady;
   final String? cameraError;
+  final bool showFullWalkthrough;
 
   @override
   State<TipsScreen> createState() => _TipsScreenState();
 }
 
 class _TipsScreenState extends State<TipsScreen> {
+  int _stepIndex = 0;
+
+  static const List<({String title, String? detail, String emoji})> _steps = [
+    (
+      title: 'Feet hip-width apart.',
+      detail: 'Bar over mid-foot.',
+      emoji: '🦶'
+    ),
+    (
+      title: 'Step back 2 metres',
+      detail: null,
+      emoji: ''
+    ),
+    (
+      title: 'Turn sideways',
+      detail: '(show correct camera angle)',
+      emoji: ''
+    ),
+  ];
+
   @override
   Widget build(BuildContext context) {
+    final int visibleStep = widget.showFullWalkthrough
+        ? _stepIndex
+        : _steps.length - 1;
+    final ({String title, String? detail, String emoji}) step = _steps[visibleStep];
+    final bool isFinalStep = visibleStep == _steps.length - 1;
+
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 28),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const SizedBox(height: 18),
-          const Align(
-            alignment: Alignment.centerLeft,
-            child: PreviewTag(
-              leadingColor: AppPalette.passBright,
-              label: 'Front camera · true orientation',
-            ),
-          ),
           const Spacer(),
-          GlassPanel(
-            padding: const EdgeInsets.fromLTRB(24, 28, 24, 24),
-            backgroundColor: AppPalette.glass1,
-            borderColor: AppPalette.glassBorder,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Ready to record',
-                  style: TextStyle(
-                    fontSize: 34,
-                    fontWeight: FontWeight.w800,
-                    height: 1.0,
-                    letterSpacing: -1.2,
-                    color: AppPalette.n50,
-                  ),
-                ),
-                const SizedBox(height: 14),
-                const Text(
-                  'Stand in frame and tap once to open the camera.',
-                  style: TextStyle(
-                    color: AppPalette.n300,
-                    fontSize: 15,
-                    height: 1.55,
-                    letterSpacing: -0.2,
-                  ),
-                ),
-                const SizedBox(height: 22),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 14,
-                  ),
-                  decoration: BoxDecoration(
-                    color: AppPalette.glass2,
-                    borderRadius: BorderRadius.circular(18),
-                    border: Border.all(color: AppPalette.glassBorderSoft),
-                  ),
-                  child: const Row(
-                    children: [
-                      VoidIcon(
-                        LucideIcons.scanFace,
-                        size: VoidIconSize.interactive,
-                        color: AppPalette.n200,
-                      ),
-                      SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          'Minimal capture mode. No rotating tips. No extra steps.',
-                          style: TextStyle(
-                            color: AppPalette.n300,
-                            fontSize: 13,
-                            height: 1.45,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+          if (step.emoji.isNotEmpty) ...[
+            Text(step.emoji, style: const TextStyle(fontSize: 42)),
+            const SizedBox(height: 18),
+          ],
+          Text(
+            step.title,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: kKioskInk,
+              fontSize: 34,
+              fontWeight: FontWeight.w800,
+              height: 1.08,
+              letterSpacing: -1.2,
             ),
           ),
+          if (step.detail != null) ...[
+            const SizedBox(height: 18),
+            Text(
+              step.detail!,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: kKioskInk,
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                height: 1.35,
+              ),
+            ),
+          ],
           const Spacer(),
           if (widget.cameraError != null)
             Padding(
               padding: const EdgeInsets.only(bottom: 16),
-              child: GlassPanel(
+              child: Container(
                 padding: const EdgeInsets.all(16),
-                backgroundColor: AppPalette.redGlass,
-                borderColor: AppPalette.redBorder,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFE8E3),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: const Color(0xFFFFC7B8)),
+                ),
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -1281,7 +1534,7 @@ class _TipsScreenState extends State<TipsScreen> {
                       child: Text(
                         widget.cameraError!,
                         style: const TextStyle(
-                          color: AppPalette.redBright,
+                          color: Color(0xFF9E3718),
                           fontSize: 13,
                           fontWeight: FontWeight.w600,
                           height: 1.45,
@@ -1292,28 +1545,53 @@ class _TipsScreenState extends State<TipsScreen> {
                 ),
               ),
             ),
-          PrimaryButton(label: 'Open camera', onPressed: widget.onReady),
+          PrimaryButton(
+            label: isFinalStep ? 'I am ready' : 'Continue',
+            onPressed: () {
+              if (isFinalStep) {
+                widget.onReady();
+              } else {
+                setState(() {
+                  _stepIndex += 1;
+                });
+              }
+            },
+          ),
           const SizedBox(height: 18),
-          Text(
-            widget.userName,
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              color: AppPalette.n500,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              letterSpacing: 0.2,
+          if (widget.showFullWalkthrough && !isFinalStep)
+            TextButton(
+              onPressed: () {
+                setState(() {
+                  _stepIndex = _steps.length - 1;
+                });
+              },
+              style: TextButton.styleFrom(foregroundColor: kKioskInkMuted),
+              child: const Text(
+                'Skip',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+              ),
+            )
+          else ...[
+            Text(
+              widget.userName,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: kKioskInkMuted,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
             ),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Your preview opens in true orientation with front camera priority.',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: AppPalette.n500,
-              fontSize: 11,
-              height: 1.45,
+            const SizedBox(height: 8),
+            const Text(
+              'Next: 3 second countdown, then pose detection and recording begin together.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: kKioskInkMuted,
+                fontSize: 11,
+                height: 1.45,
+              ),
             ),
-          ),
+          ],
           const SizedBox(height: 8),
         ],
       ),
@@ -1352,7 +1630,7 @@ class _RecordingScreenState extends State<RecordingScreen> {
   Duration _idleOverlayRemaining = const Duration(seconds: 120);
   bool _muted = false;
   Color? _edgePulseColor;
-  RecordingSubState _recordingSubState = RecordingSubState.active;
+  RecordingSubState _recordingSubState = RecordingSubState.detecting;
   double _poseConfidence = 0;
   int _consecutiveHighConfidenceFrames = 0;
   int _consecutiveLowConfidenceFrames = 0;
@@ -1377,10 +1655,15 @@ class _RecordingScreenState extends State<RecordingScreen> {
     'Hip hinge': 0,
     'Lock out': 0,
   };
+  late final VoiceCoachController _voiceCoach;
 
   @override
   void initState() {
     super.initState();
+    _voiceCoach = VoiceCoachController(
+      apiKey: kGeminiApiKey,
+      model: kGeminiModel,
+    );
     _timer = Timer.periodic(const Duration(milliseconds: 250), (_) {
       if (!mounted) {
         return;
@@ -1396,6 +1679,7 @@ class _RecordingScreenState extends State<RecordingScreen> {
   void dispose() {
     _timer?.cancel();
     _positiveNudgeTimer?.cancel();
+    unawaited(_voiceCoach.stop());
     super.dispose();
   }
 
@@ -1606,6 +1890,31 @@ class _RecordingScreenState extends State<RecordingScreen> {
         }
       }
     });
+
+    unawaited(
+      _voiceCoach.maybeSpeak(
+        enabled: !_muted &&
+            _recordingSubState == RecordingSubState.active &&
+            confidence >= 0.65,
+        exerciseName: 'Deadlift',
+        repCount: _repCount,
+        poseConfidence: confidence,
+        activeCueTitle: _activeCue.title,
+        activeCommand: _activeCue.command,
+        activeDetail: _activeCue.detail,
+        cues: _currentCueSummaries
+            .map(
+              (cue) => <String, String>{
+                'label': cue.label,
+                'state': cue.state.name,
+              },
+            )
+            .toList(),
+        minGap: justCompletedRep
+            ? const Duration(seconds: 2)
+            : const Duration(seconds: 4),
+      ),
+    );
   }
 
   bool _updateRepCycle({
@@ -1868,214 +2177,262 @@ class _RecordingScreenState extends State<RecordingScreen> {
         _poseConfidence >= 0.3 &&
         _poseConfidence < 0.65;
 
-    return Stack(
-      children: [
-        Positioned.fill(
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 280),
-            decoration: BoxDecoration(
-              border: Border.all(
-                color:
-                    _edgePulseColor?.withValues(alpha: 0.75) ??
-                    Colors.transparent,
-                width: 4,
-              ),
-              boxShadow: _edgePulseColor == null
-                  ? null
-                  : [
-                      BoxShadow(
-                        color: _edgePulseColor!.withValues(alpha: 0.35),
-                        blurRadius: 48,
-                        spreadRadius: 6,
-                      ),
-                    ],
-            ),
-          ),
-        ),
-        Positioned.fill(
-          child: RecordingCameraBackdrop(onPoseResult: _handlePoseResult),
-        ),
-        Positioned.fill(
-          child: Container(
-            color: isPaused
-                ? const Color.fromRGBO(6, 8, 16, 0.55)
-                : const Color.fromRGBO(6, 8, 16, 0.28),
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 18, 20, 22),
-          child: Column(
-            children: [
-              Row(
-                children: [
-                  GlassIconButton(
-                    onTap: () {
-                      setState(() {
-                        _muted = !_muted;
-                      });
-                    },
-                    icon: _muted
-                        ? LucideIcons.volumeX
-                        : LucideIcons.volume2,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _RecordingIntroBanner(userName: widget.userName),
-                  ),
-                  const SizedBox(width: 10),
-                  _RepCounterPill(repCount: _repCount),
-                  if (!isDetecting) ...[
-                    const SizedBox(width: 10),
-                    RecordingPill(timeLabel: _timeLabel()),
-                  ],
-                ],
-              ),
-              const SizedBox(height: 18),
-              if (isDetecting)
-                Align(
-                  alignment: Alignment.center,
-                  child: GlassPanel(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 5,
-                    ),
-                    backgroundColor: const Color.fromRGBO(6, 8, 16, 0.7),
-                    borderColor: Colors.transparent,
-                    borderRadius: 999,
-                    blur: 12,
-                    child: const Text(
-                      'Stand side-on, 2 metres away',
-                      style: TextStyle(
-                        color: Color.fromRGBO(255, 255, 255, 0.55),
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
-                )
-              else
-                LiveCoachBanner(
-                  cue: _activeCue,
-                  muted: _muted || isPaused || showLowConfidenceWarning,
-                ),
-              const Spacer(),
-              if (_positiveNudge != null && !showLowConfidenceWarning && !isPaused)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: GlassPanel(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 10,
-                    ),
-                    backgroundColor: AppPalette.passGlass,
-                    borderColor: AppPalette.passBorder,
-                    borderRadius: 16,
-                    child: Text(
-                      _positiveNudge!,
-                      style: const TextStyle(
-                        color: AppPalette.passBright,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ),
-              if (isPaused)
-                const Padding(
-                  padding: EdgeInsets.only(bottom: 12),
-                  child: _RecordingWarningBar(
-                    text: 'Step back into frame',
-                    foreground: Color.fromRGBO(184, 96, 0, 1),
-                    background: Color.fromRGBO(184, 96, 0, 0.1),
-                  ),
-                )
-              else if (showLowConfidenceWarning)
-                const Padding(
-                  padding: EdgeInsets.only(bottom: 12),
-                  child: _RecordingWarningBar(
-                    text: 'Adjust lighting or step closer',
-                    foreground: Color.fromRGBO(255, 255, 255, 0.5),
-                    background: Color.fromRGBO(184, 96, 0, 0.1),
-                  ),
-                ),
-              if (isDetecting || isPaused)
-                _CuePillRow(cues: _currentCueSummaries)
-              else
+    final Color accentColor = _edgePulseColor ?? const Color(0xFFB9B4B0);
+
+    return ColoredBox(
+      color: kKioskPaper,
+      child: Stack(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 22),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
                 Row(
-                  children: List.generate(3, (index) {
-                    final SessionCueSummary cue = _currentCueSummaries[index];
-                    return Expanded(
-                      child: Padding(
-                        padding: EdgeInsets.only(right: index == 2 ? 0 : 8),
-                        child: CoachingMeter(
-                          label: cue.label,
-                          value: cue.state == CueState.pass
-                              ? 'Pass'
-                              : cue.state == CueState.warn
-                                  ? 'Warn'
-                                  : 'Neutral',
-                          state: cue.state,
-                          isActive: index == 0,
+                  children: [
+                    Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.white,
+                        border: Border.all(color: kKioskStroke),
+                      ),
+                      alignment: Alignment.center,
+                      child: Text(
+                        widget.userName.characters.first.toUpperCase(),
+                        style: const TextStyle(
+                          color: kKioskInk,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
-                    );
-                  }),
-                ),
-              if (_showDetectingRetry) ...[
-                const SizedBox(height: 12),
-                Column(
-                  children: [
-                    const Text(
-                      'Adjust your position — try standing side-on',
-                      style: TextStyle(
-                        color: AppPalette.n300,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
+                    ),
+                    const SizedBox(width: 10),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.userName,
+                          style: const TextStyle(
+                            color: kKioskInk,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const Text(
+                          'Barbell deadlift',
+                          style: TextStyle(
+                            color: kKioskInkMuted,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const Spacer(),
+                    if (!isDetecting) RecordingPill(timeLabel: _timeLabel()),
+                    if (!isDetecting) const SizedBox(width: 8),
+                    _RepCounterPill(repCount: _repCount),
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: () {
+                        setState(() {
+                          _muted = !_muted;
+                        });
+                      },
+                      child: Container(
+                        width: 34,
+                        height: 34,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(17),
+                          border: Border.all(color: kKioskStroke),
+                        ),
+                        alignment: Alignment.center,
+                        child: Icon(
+                          _muted ? LucideIcons.volumeX : LucideIcons.volume2,
+                          color: kKioskInkMuted,
+                          size: 16,
+                        ),
                       ),
                     ),
-                    const SizedBox(height: 8),
-                    SecondaryButton(label: 'Try again', onPressed: _resetDetectingTimer),
                   ],
                 ),
-              ],
-              if (isPaused && _pausedElapsed >= const Duration(seconds: 10)) ...[
-                const SizedBox(height: 12),
-                Column(
-                  children: [
-                    const Text(
-                      'Still recording. Step into frame or stop.',
-                      style: TextStyle(
-                        color: AppPalette.n300,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
+                const SizedBox(height: 16),
+                Expanded(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: kKioskCard,
+                      borderRadius: BorderRadius.circular(28),
+                      border: Border.all(
+                        color: accentColor.withValues(alpha: 0.45),
+                        width: 1.4,
                       ),
                     ),
-                    const SizedBox(height: 8),
-                    SecondaryButton(label: 'Stop recording', onPressed: _finishSession),
-                  ],
-                ),
-              ],
-              const SizedBox(height: 22),
-              Row(
-                children: [
-                  Expanded(
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: VoidTextAction(
-                        label: 'Switch user',
-                        onTap: widget.onSwitchUser,
-                        icon: LucideIcons.arrowRightLeft,
-                      ),
+                    clipBehavior: Clip.antiAlias,
+                    child: Stack(
+                      children: [
+                        Positioned.fill(
+                          child: RecordingCameraBackdrop(onPoseResult: _handlePoseResult),
+                        ),
+                        Positioned.fill(
+                          child: Container(
+                            color: isPaused
+                                ? const Color.fromRGBO(6, 8, 16, 0.28)
+                                : const Color.fromRGBO(255, 255, 255, 0.06),
+                          ),
+                        ),
+                        if (isDetecting)
+                          const Center(
+                            child: _CameraInstructionPill(
+                              text: 'Stand side-on, 2 metres away',
+                            ),
+                          )
+                        else
+                          Positioned(
+                            left: 14,
+                            right: 14,
+                            top: 14,
+                            child: _CoachStrip(
+                              cue: _activeCue,
+                              muted: _muted || isPaused || showLowConfidenceWarning,
+                            ),
+                          ),
+                        if (_positiveNudge != null && !showLowConfidenceWarning && !isPaused)
+                          Positioned(
+                            top: 74,
+                            left: 14,
+                            right: 14,
+                            child: Center(
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFDCF4E7),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Text(
+                                  _positiveNudge!,
+                                  style: const TextStyle(
+                                    color: Color(0xFF0A8C59),
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        if (isPaused)
+                          const Positioned(
+                            left: 14,
+                            right: 14,
+                            bottom: 82,
+                            child: _RecordingWarningBar(
+                              text: 'Step back into frame',
+                              foreground: Color.fromRGBO(184, 96, 0, 1),
+                              background: Color.fromRGBO(184, 96, 0, 0.1),
+                            ),
+                          )
+                        else if (showLowConfidenceWarning)
+                          const Positioned(
+                            left: 14,
+                            right: 14,
+                            bottom: 82,
+                            child: _RecordingWarningBar(
+                              text: 'Adjust lighting or step closer',
+                              foreground: Color.fromRGBO(87, 81, 86, 1),
+                              background: Color.fromRGBO(255, 255, 255, 0.78),
+                            ),
+                          ),
+                        Positioned(
+                          left: 14,
+                          right: 14,
+                          bottom: 14,
+                          child: isDetecting || isPaused
+                              ? _CuePillRow(cues: _currentCueSummaries)
+                              : Row(
+                                  children: List.generate(3, (index) {
+                                    final SessionCueSummary cue = _currentCueSummaries[index];
+                                    return Expanded(
+                                      child: Padding(
+                                        padding: EdgeInsets.only(
+                                          right: index == 2 ? 0 : 8,
+                                        ),
+                                        child: CoachingMeter(
+                                          label: cue.label,
+                                          value: cue.state == CueState.pass
+                                              ? 'Pass'
+                                              : cue.state == CueState.warn
+                                                  ? 'Warn'
+                                                  : 'Neutral',
+                                          state: cue.state,
+                                          isActive: index == 0,
+                                        ),
+                                      ),
+                                    );
+                                  }),
+                                ),
+                        ),
+                      ],
                     ),
                   ),
-                  GlassStopButton(onPressed: _finishSession),
-                  const Expanded(child: SizedBox()),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  isDetecting
+                      ? 'Drive the floor away.'
+                      : isPaused && _pausedElapsed >= const Duration(seconds: 10)
+                          ? 'Still recording. Step into frame or stop.'
+                          : _activeCue.detail,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: kKioskInkMuted,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    height: 1.45,
+                  ),
+                ),
+                if (_showDetectingRetry) ...[
+                  const SizedBox(height: 10),
+                  SecondaryButton(
+                    label: 'Try again',
+                    onPressed: _resetDetectingTimer,
+                    backgroundColor: Colors.white,
+                    borderColor: kKioskStroke,
+                    textColor: kKioskInk,
+                  ),
                 ],
-              ),
-            ],
+                if (isPaused && _pausedElapsed >= const Duration(seconds: 10)) ...[
+                  const SizedBox(height: 10),
+                  SecondaryButton(
+                    label: 'Stop recording',
+                    onPressed: _finishSession,
+                    backgroundColor: Colors.white,
+                    borderColor: kKioskStroke,
+                    textColor: kKioskInk,
+                  ),
+                ],
+                const SizedBox(height: 18),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: VoidTextAction(
+                          label: 'Switch user',
+                          onTap: widget.onSwitchUser,
+                          icon: LucideIcons.arrowRightLeft,
+                        ),
+                      ),
+                    ),
+                    GlassStopButton(onPressed: _finishSession),
+                    const Expanded(child: SizedBox()),
+                  ],
+                ),
+              ],
+            ),
           ),
-        ),
-        if (_showIdleOverlay)
+          if (_showIdleOverlay)
           Positioned.fill(
             child: Container(
               color: const Color.fromRGBO(6, 8, 16, 0.8),
@@ -2149,7 +2506,8 @@ class _RecordingScreenState extends State<RecordingScreen> {
               ),
             ),
           ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -2177,118 +2535,169 @@ class _VideoPreviewScreenState extends State<VideoPreviewScreen> {
   @override
   Widget build(BuildContext context) {
     return ColoredBox(
-      color: const Color(0xFF07080F),
+      color: kKioskPaper,
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final double mediaHeight = math.min(
-            constraints.maxHeight * 0.58,
-            constraints.maxHeight - 176,
+          final double mediaHeight = math.max(
+            220,
+            math.min(
+              constraints.maxHeight * 0.58,
+              constraints.maxHeight - 188,
+            ),
           );
 
           return Padding(
-            padding: const EdgeInsets.only(bottom: 40),
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                SizedBox(
-                  height: mediaHeight.clamp(240, constraints.maxHeight),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: _SubmissionVideoThumbnail(
-                      videoPath: widget.session.tempVideoPath,
-                      onLoadedChanged: (loaded) {
-                        if (_thumbnailReady != loaded && mounted) {
-                          WidgetsBinding.instance.addPostFrameCallback((_) {
-                            if (mounted) {
-                              setState(() {
-                                _thumbnailReady = loaded;
-                              });
-                            }
-                          });
-                        }
-                      },
+                Row(
+                  children: [
+                    Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.white,
+                        border: Border.all(color: kKioskStroke),
+                      ),
+                      alignment: Alignment.center,
+                      child: const Text(
+                        'P',
+                        style: TextStyle(
+                          color: kKioskInk,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
                     ),
+                    const SizedBox(width: 10),
+                    const Expanded(
+                      child: Text(
+                        'Save or discard',
+                        style: TextStyle(
+                          color: kKioskInk,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -0.4,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  height: mediaHeight,
+                  decoration: BoxDecoration(
+                    color: kKioskCard,
+                    borderRadius: BorderRadius.circular(28),
+                    border: Border.all(color: kKioskStroke),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: _SubmissionVideoThumbnail(
+                    videoPath: widget.session.tempVideoPath,
+                    onLoadedChanged: (loaded) {
+                      if (_thumbnailReady != loaded && mounted) {
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (mounted) {
+                            setState(() {
+                              _thumbnailReady = loaded;
+                            });
+                          }
+                        });
+                      }
+                    },
                   ),
                 ),
                 const Spacer(),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                Container(
+                  padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF8E8B8D),
+                    borderRadius: BorderRadius.circular(24),
+                  ),
                   child: Column(
-                    mainAxisSize: MainAxisSize.min,
                     children: [
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text(
-                            widget.session.exerciseName,
-                            style: const TextStyle(
-                              color: Color(0xFFF0F1F7),
-                              fontSize: 18,
-                              fontWeight: FontWeight.w700,
-                              letterSpacing: -0.5,
+                          Expanded(
+                            child: Text(
+                              widget.session.exerciseName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: -0.5,
+                              ),
                             ),
                           ),
+                          const SizedBox(width: 12),
                           Text(
                             '${widget.session.repCount} reps',
                             style: const TextStyle(
-                              color: Color(0x66FFFFFF),
+                              color: Color(0xD9FFFFFF),
                               fontSize: 18,
-                              fontWeight: FontWeight.w200,
+                              fontWeight: FontWeight.w300,
                               letterSpacing: -0.5,
                             ),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 12),
-                      if (_thumbnailReady)
-                        SizedBox(
-                          width: double.infinity,
-                          height: 56,
-                          child: ElevatedButton(
-                            onPressed: _isRendering
-                                ? null
-                                : () async {
-                                    setState(() {
-                                      _isRendering = true;
-                                    });
-                                    await Future<void>.delayed(
-                                      const Duration(milliseconds: 900),
-                                    );
-                                    if (!mounted) {
-                                      return;
-                                    }
-                                    await widget.onSave();
-                                    if (mounted) {
-                                      setState(() {
-                                        _isRendering = false;
-                                      });
-                                    }
-                                  },
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFFF0F1F7),
-                              foregroundColor: const Color(0xFF07080F),
-                              disabledBackgroundColor: const Color(0xFFF0F1F7),
-                              disabledForegroundColor: const Color(0xFF07080F),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(999),
+                      const SizedBox(height: 14),
+                      AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 180),
+                        child: _thumbnailReady
+                            ? SizedBox(
+                                key: const ValueKey('save-ready'),
+                                width: double.infinity,
+                                height: 56,
+                                child: ElevatedButton(
+                                  onPressed: _isRendering
+                                      ? null
+                                      : () async {
+                                          setState(() {
+                                            _isRendering = true;
+                                          });
+                                          await widget.onSave();
+                                          if (mounted) {
+                                            setState(() {
+                                              _isRendering = false;
+                                            });
+                                          }
+                                        },
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.white,
+                                    foregroundColor: const Color(0xFF07080F),
+                                    disabledBackgroundColor: Colors.white,
+                                    disabledForegroundColor: const Color(0xFF07080F),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(999),
+                                    ),
+                                    elevation: 0,
+                                  ),
+                                  child: Text(
+                                    _isRendering ? 'Saving...' : 'Save and share',
+                                    style: const TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w700,
+                                      letterSpacing: -0.3,
+                                    ),
+                                  ),
+                                ),
+                              )
+                            : const SizedBox(
+                                key: ValueKey('save-placeholder'),
+                                height: 56,
                               ),
-                              elevation: 0,
-                            ),
-                            child: Text(
-                              _isRendering ? 'Saving...' : 'Save and share',
-                              style: const TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w700,
-                                letterSpacing: -0.3,
-                              ),
-                            ),
-                          ),
-                        ),
+                      ),
                       const SizedBox(height: 12),
                       TextButton(
                         onPressed: _isRendering ? null : _showDiscardDialog,
                         style: TextButton.styleFrom(
-                          foregroundColor: const Color(0x44FFFFFF),
+                          foregroundColor: const Color.fromRGBO(255, 255, 255, 0.48),
                           overlayColor: Colors.transparent,
                           padding: EdgeInsets.zero,
                           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -2298,7 +2707,7 @@ class _VideoPreviewScreenState extends State<VideoPreviewScreen> {
                           style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w400,
-                            color: Color.fromRGBO(255, 255, 255, 0.27),
+                            color: Color.fromRGBO(255, 255, 255, 0.48),
                           ),
                         ),
                       ),
@@ -2489,6 +2898,7 @@ class CultAppScreen extends StatefulWidget {
   const CultAppScreen({
     super.key,
     required this.userName,
+    required this.session,
     required this.onOpenAsset,
     required this.onRecordNext,
     required this.onEndSession,
@@ -2498,6 +2908,7 @@ class CultAppScreen extends StatefulWidget {
   });
 
   final String userName;
+  final VisionSessionData session;
   final VoidCallback onOpenAsset;
   final VoidCallback onRecordNext;
   final VoidCallback onEndSession;
@@ -2593,181 +3004,778 @@ class _CultAppScreenState extends State<CultAppScreen> {
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        if (widget.nextUserWaiting)
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-              color: AppPalette.redGlass,
-              child: const Text(
-                'Next up: tap End session to hand over.',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: AppPalette.redBright,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
+        _MobileFirstExperienceFrame(
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 280),
+            switchInCurve: kVoidEase,
+            switchOutCurve: kVoidEase,
+            child: _renderStage < 2
+                ? _CultVisionRenderSplash(
+                    key: ValueKey<int>(_renderStage),
+                    stage: _renderStage,
+                    statusTitle: _statusTitle,
+                    statusBody: _statusBody,
+                    previewVideoPath: widget.session.shareableVideoPath,
+                    onClose: _startEndSession,
+                  )
+                : _CultAppMobileSummary(
+                    key: const ValueKey('cult-summary'),
+                    userName: widget.userName,
+                    session: widget.session,
+                    queuedUploadNotice: widget.queuedUploadNotice,
+                    nextUserWaiting: widget.nextUserWaiting,
+                    onOpenAsset: widget.onOpenAsset,
+                    onRecordNext: widget.onRecordNext,
+                    onClose: _startEndSession,
+                  ),
+          ),
+        ),
+        if (_countdown != null)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: Container(
+                color: AppPalette.voidColor.withValues(alpha: 0.72),
+                alignment: Alignment.center,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'ENDING SESSION IN',
+                      style: TextStyle(
+                        color: AppPalette.n500,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 2.2,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '$_countdown',
+                      style: const TextStyle(
+                        color: AppPalette.n50,
+                        fontSize: 48,
+                        fontWeight: FontWeight.w300,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
           ),
-        Center(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 30),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const SuccessBadge(),
-                const SizedBox(height: 28),
-                Text(
-                  _renderStage == 2
-                      ? 'Your workout is in Cult, ${widget.userName}.'
-                      : 'Sending it to Cult, ${widget.userName}.',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: AppPalette.n50,
-                    fontSize: 34,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: -1.2,
-                    height: 1.04,
+      ],
+    );
+  }
+}
+
+class _MobileFirstExperienceFrame extends StatelessWidget {
+  const _MobileFirstExperienceFrame({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 430),
+        child: ClipRect(child: child),
+      ),
+    );
+  }
+}
+
+class _CultVisionRenderSplash extends StatelessWidget {
+  const _CultVisionRenderSplash({
+    super.key,
+    required this.stage,
+    required this.statusTitle,
+    required this.statusBody,
+    required this.previewVideoPath,
+    required this.onClose,
+  });
+
+  final int stage;
+  final String statusTitle;
+  final String statusBody;
+  final String? previewVideoPath;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isReady = stage == 1;
+
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFF24172E), Color(0xFF12253B), Color(0xFF1C1D28)],
+        ),
+      ),
+      child: Stack(
+        children: [
+          const Positioned(
+            top: -28,
+            left: -54,
+            child: _FloatingMediaBubble(
+              size: 196,
+              tint: AppPalette.emberGlass,
+              icon: LucideIcons.music4,
+            ),
+          ),
+          const Positioned(
+            top: 148,
+            right: -58,
+            child: _FloatingMediaBubble(
+              size: 172,
+              tint: AppPalette.violetGlass,
+              icon: LucideIcons.headphones,
+            ),
+          ),
+          const Positioned(
+            top: 430,
+            left: -82,
+            child: _FloatingMediaBubble(
+              size: 220,
+              tint: AppPalette.passGlass,
+              icon: LucideIcons.activity,
+            ),
+          ),
+          const Positioned(
+            top: 500,
+            right: -56,
+            child: _FloatingMediaBubble(
+              size: 198,
+              tint: AppPalette.redGlass,
+              icon: LucideIcons.dumbbell,
+            ),
+          ),
+          const Positioned(
+            bottom: -46,
+            left: 150,
+            child: _FloatingMediaBubble(
+              size: 212,
+              tint: AppPalette.emberGlass,
+              icon: LucideIcons.footprints,
+            ),
+          ),
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: Column(
+                children: [
+                  Align(
+                    alignment: Alignment.topRight,
+                    child: IconButton(
+                      onPressed: onClose,
+                      icon: const Icon(LucideIcons.x, color: Colors.white, size: 38),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  _statusTitle,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: AppPalette.n300,
-                    fontSize: 16,
-                    letterSpacing: -0.2,
+                  const Spacer(),
+                  Container(
+                    width: 274,
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.06),
+                      borderRadius: BorderRadius.circular(34),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(28),
+                      child: AspectRatio(
+                        aspectRatio: 1.14,
+                        child: previewVideoPath == null || previewVideoPath!.isEmpty
+                            ? const _SubmissionPreviewFallback()
+                            : _ShareAssetVideoArtwork(videoPath: previewVideoPath),
+                      ),
+                    ),
                   ),
-                ),
-                if (widget.queuedUploadNotice != null) ...[
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 34),
+                  const Text(
+                    'cult\nvision',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 64,
+                      fontWeight: FontWeight.w900,
+                      height: 0.9,
+                      letterSpacing: -2.8,
+                    ),
+                  ),
+                  const SizedBox(height: 18),
                   Text(
-                    widget.queuedUploadNotice!,
+                    statusTitle,
                     textAlign: TextAlign.center,
                     style: const TextStyle(
-                      color: AppPalette.n400,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w400,
+                      color: AppPalette.n100,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 28),
+                    child: Text(
+                      statusBody,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: AppPalette.n300,
+                        fontSize: 13,
+                        height: 1.5,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  if (!isReady)
+                    const SizedBox(
+                      width: 26,
+                      height: 26,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.2,
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                      ),
+                    )
+                  else
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.12),
+                        ),
+                      ),
+                      child: const Text(
+                        'Ready inside the Cult app',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  const Spacer(),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CultAppMobileSummary extends StatelessWidget {
+  const _CultAppMobileSummary({
+    super.key,
+    required this.userName,
+    required this.session,
+    required this.queuedUploadNotice,
+    required this.nextUserWaiting,
+    required this.onOpenAsset,
+    required this.onRecordNext,
+    required this.onClose,
+  });
+
+  final String userName;
+  final VisionSessionData session;
+  final String? queuedUploadNotice;
+  final bool nextUserWaiting;
+  final VoidCallback onOpenAsset;
+  final VoidCallback onRecordNext;
+  final VoidCallback onClose;
+
+  int get _streakDays => math.max(3, math.min(9, session.repCount ~/ 3));
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFF21182D), Color(0xFF13263F), Color(0xFF1B2030)],
+        ),
+      ),
+      child: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(24, 18, 24, 36),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  _ProfileIdentityChip(name: userName),
+                  const Spacer(),
+                  IconButton(
+                    onPressed: onClose,
+                    icon: const Icon(LucideIcons.x, color: Colors.white, size: 36),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              if (queuedUploadNotice != null || nextUserWaiting)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 18),
+                  child: _InfoBanner(
+                    text: queuedUploadNotice ??
+                        'Next up is waiting. End session when you are ready.',
+                    tone: queuedUploadNotice != null
+                        ? AppPalette.violetGlass
+                        : AppPalette.redGlass,
+                  ),
+                ),
+              const SizedBox(height: 10),
+              const _AchievementOrb(),
+              const SizedBox(height: 18),
+              const Text(
+                'Bravo!\nThat was a killer session.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 28,
+                  fontWeight: FontWeight.w800,
+                  height: 1.1,
+                  letterSpacing: -0.8,
+                ),
+              ),
+              const SizedBox(height: 18),
+              Row(
+                children: [
+                  Expanded(
+                    child: _SummaryStatCard(
+                      value: '$_streakDays',
+                      label: 'DAYS STREAK',
+                      emoji: '🔥',
+                      glow: AppPalette.emberGlass,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _SummaryStatCard(
+                      value: '${session.formScore}',
+                      label: 'FORM SCORE',
+                      emoji: '💪',
+                      glow: AppPalette.passGlass,
                     ),
                   ),
                 ],
-                const SizedBox(height: 14),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 342),
-                  child: CultAppResultCard(
-                    userName: widget.userName,
-                    stage: _renderStage,
-                    body: _statusBody,
-                  ),
+              ),
+              const SizedBox(height: 34),
+              _CultSessionCard(
+                title: session.exerciseName,
+                repLabel: '${session.repCount} reps',
+                prLabel: '${math.max(80, session.formScore + 65)} PR',
+                videoPath: session.shareableVideoPath,
+                tag: 'Upper Body | Gym Sesh',
+                ctaLabel: 'CHECK YOUR RECORDINGS',
+                onTap: onOpenAsset,
+                accent: const [Color(0xFF384F9E), Color(0xFFB7A93A)],
+              ),
+              const SizedBox(height: 26),
+              _CultSessionCard(
+                title: 'Front squat',
+                repLabel: '${math.max(10, session.repCount * 2)} reps',
+                prLabel: '${math.max(60, session.formScore - 18)} PR',
+                videoPath: null,
+                tag: 'Upper Body | Gym Sesh',
+                ctaLabel: 'RESET TO STATE 0',
+                onTap: onRecordNext,
+                accent: const [Color(0xFF43302A), Color(0xFF77503E)],
+              ),
+              const SizedBox(height: 42),
+              const Text(
+                'How was your Sesh today?',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 24,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -0.6,
                 ),
-                const SizedBox(height: 28),
-                if (_countdown != null)
-                  Column(
-                    children: [
-                      const Text(
-                        'ENDING SESSION IN',
-                        style: TextStyle(
-                          color: AppPalette.n500,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: 2.2,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        '$_countdown',
-                        style: const TextStyle(
-                          color: AppPalette.n50,
-                          fontSize: 48,
-                          fontWeight: FontWeight.w300,
-                        ),
-                      ),
-                    ],
-                  )
-                else if (_renderStage == 2)
-                  Column(
-                    children: [
-                      PrimaryButton(
-                        label: 'Open Shareable Asset',
-                        onPressed: widget.onOpenAsset,
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: SecondaryButton(
-                              label: 'Record Next Set',
-                              onPressed: widget.onRecordNext,
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: SecondaryButton(
-                              label: 'End Session',
-                              backgroundColor: Colors.transparent,
-                              borderColor: AppPalette.glassBorderSoft,
-                              textColor: AppPalette.n300,
-                              onPressed: _startEndSession,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  )
-                else
-                  Row(
-                    children: [
-                      Expanded(
-                        child: SecondaryButton(
-                          label: 'Record Next Set',
-                          onPressed: widget.onRecordNext,
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: SecondaryButton(
-                          label: 'End Session',
-                          backgroundColor: Colors.transparent,
-                          borderColor: AppPalette.glassBorderSoft,
-                          textColor: AppPalette.n300,
-                          onPressed: _startEndSession,
-                        ),
-                      ),
-                    ],
-                  ),
-              ],
+              ),
+              const SizedBox(height: 18),
+              const Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  Text('😫', style: TextStyle(fontSize: 38)),
+                  Text('😕', style: TextStyle(fontSize: 38)),
+                  Text('🙂', style: TextStyle(fontSize: 38)),
+                  Text('😊', style: TextStyle(fontSize: 38)),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FloatingMediaBubble extends StatelessWidget {
+  const _FloatingMediaBubble({
+    required this.size,
+    required this.tint,
+    required this.icon,
+  });
+
+  final double size;
+  final Color tint;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            tint.withValues(alpha: 0.92),
+            AppPalette.depth1.withValues(alpha: 0.96),
+          ],
+        ),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+      ),
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          const Positioned.fill(child: PreviewCardBackdrop()),
+          Icon(icon, color: Colors.white.withValues(alpha: 0.74), size: size * 0.22),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProfileIdentityChip extends StatelessWidget {
+  const _ProfileIdentityChip({required this.name});
+
+  final String name;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
+            gradient: const LinearGradient(
+              colors: [Color(0xFFC1C5D1), Color(0xFF646B85)],
+            ),
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            name.characters.first.toUpperCase(),
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
             ),
           ),
         ),
-        Positioned(
-          right: 16,
-          bottom: 12,
-          child: VoidPressable(
-            onTap: widget.onToggleNextUser,
-            borderRadius: 999,
-            child: GlassPanel(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              backgroundColor: AppPalette.glass2,
-              borderColor: AppPalette.glassBorder,
-              borderRadius: 999,
-              child: Text(
-                widget.nextUserWaiting
-                    ? 'Next user waiting'
-                    : 'Toggle: next user',
-                style: const TextStyle(
-                  color: AppPalette.n400,
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
+        const SizedBox(width: 12),
+        Text(
+          name,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 20,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _AchievementOrb extends StatelessWidget {
+  const _AchievementOrb();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        width: 190,
+        height: 190,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF4A3C1A), Color(0xFF20344E)],
+          ),
+          border: Border.all(color: Colors.black.withValues(alpha: 0.35), width: 6),
+        ),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            const Positioned.fill(child: PreviewCardBackdrop()),
+            Container(
+              width: 118,
+              height: 118,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.black.withValues(alpha: 0.18),
+              ),
+              alignment: Alignment.center,
+              child: const Text('🏆', style: TextStyle(fontSize: 68)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SummaryStatCard extends StatelessWidget {
+  const _SummaryStatCard({
+    required this.value,
+    required this.label,
+    required this.emoji,
+    required this.glow,
+  });
+
+  final String value;
+  final String label;
+  final String emoji;
+  final Color glow;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(18, 14, 18, 14),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+        boxShadow: [
+          BoxShadow(
+            color: glow.withValues(alpha: 0.52),
+            blurRadius: 28,
+            spreadRadius: -8,
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  value,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 34,
+                    fontWeight: FontWeight.w800,
+                    height: 0.95,
+                  ),
                 ),
+                const SizedBox(height: 6),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    color: AppPalette.n200,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1.1,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Text(emoji, style: const TextStyle(fontSize: 30)),
+        ],
+      ),
+    );
+  }
+}
+
+class _CultSessionCard extends StatelessWidget {
+  const _CultSessionCard({
+    required this.title,
+    required this.repLabel,
+    required this.prLabel,
+    required this.videoPath,
+    required this.tag,
+    required this.ctaLabel,
+    required this.onTap,
+    required this.accent,
+  });
+
+  final String title;
+  final String repLabel;
+  final String prLabel;
+  final String? videoPath;
+  final String tag;
+  final String ctaLabel;
+  final VoidCallback onTap;
+  final List<Color> accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text(
+          'Today • 6:00 PM',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 18,
+            fontWeight: FontWeight.w700,
+            letterSpacing: -0.3,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Colors.white.withValues(alpha: 0.07),
+                accent.last.withValues(alpha: 0.22),
+              ],
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  tag,
+                  style: const TextStyle(
+                    color: AppPalette.n100,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 18),
+              Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          title,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 24,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: -0.8,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        RichText(
+                          text: TextSpan(
+                            style: const TextStyle(
+                              color: AppPalette.n200,
+                              fontSize: 16,
+                            ),
+                            children: [
+                              TextSpan(text: repLabel),
+                              const TextSpan(text: ' • '),
+                              TextSpan(
+                                text: prLabel,
+                                style: const TextStyle(
+                                  color: AppPalette.passBright,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Container(
+                    width: 132,
+                    height: 132,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(20),
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: accent,
+                      ),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(20),
+                      child: videoPath == null || videoPath!.isEmpty
+                          ? const _SubmissionPreviewFallback()
+                          : _ShareAssetVideoArtwork(videoPath: videoPath),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        VoidPressable(
+          onTap: onTap,
+          borderRadius: 6,
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 20),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              ctaLabel,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.2,
               ),
             ),
           ),
         ),
       ],
+    );
+  }
+}
+
+class _InfoBanner extends StatelessWidget {
+  const _InfoBanner({required this.text, required this.tone});
+
+  final String text;
+  final Color tone;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: tone,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(
+          color: AppPalette.n100,
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
     );
   }
 }
@@ -2897,6 +3905,100 @@ class GuidanceRow extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _CameraInstructionPill extends StatelessWidget {
+  const _CameraInstructionPill({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color.fromRGBO(6, 8, 16, 0.72),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(
+          color: Color.fromRGBO(255, 255, 255, 0.72),
+          fontSize: 12,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+    );
+  }
+}
+
+class _CoachStrip extends StatelessWidget {
+  const _CoachStrip({
+    required this.cue,
+    required this.muted,
+  });
+
+  final LiveCoachingCue cue;
+  final bool muted;
+
+  @override
+  Widget build(BuildContext context) {
+    final Color accent = switch (cue.state) {
+      CueState.warn => AppPalette.warnBright,
+      CueState.pass => AppPalette.passBright,
+      CueState.neutral => kKioskInk,
+    };
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.92),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.45)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  cue.command,
+                  style: TextStyle(
+                    color: accent,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -0.3,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  cue.detail,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: kKioskInkMuted,
+                    fontSize: 11,
+                    height: 1.35,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            muted ? 'VOICE OFF' : 'VOICE ON',
+            style: const TextStyle(
+              color: kKioskInkMuted,
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -3097,144 +4199,550 @@ class ShareableAssetScreen extends StatelessWidget {
   const ShareableAssetScreen({
     super.key,
     required this.session,
+    required this.onBack,
     required this.onRecordNext,
   });
 
   final VisionSessionData session;
+  final VoidCallback onBack;
   final VoidCallback onRecordNext;
 
   @override
   Widget build(BuildContext context) {
-    return ColoredBox(
-      color: const Color(0xFF07080F),
-      child: SafeArea(
-        child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                child: _ShareAssetVideoCard(videoPath: session.shareableVideoPath),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-                child: Row(
-                  children: session.cues
-                      .map(
-                        (cue) => Expanded(
-                          child: Padding(
-                            padding: EdgeInsets.only(
-                              right: cue == session.cues.last ? 0 : 8,
-                            ),
-                            child: _CueSummaryChip(cue: cue),
-                          ),
-                        ),
-                      )
-                      .toList(),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '${session.repCount}',
-                          style: const TextStyle(
-                            color: Color(0xFFF0F1F7),
-                            fontSize: 28,
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: -1.5,
-                          ),
-                        ),
-                        const Text(
-                          'reps',
-                          style: TextStyle(
-                            color: Color(0x55FFFFFF),
-                            fontSize: 11,
-                            fontWeight: FontWeight.w300,
-                          ),
-                        ),
-                      ],
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFF191628), Color(0xFF13233B), Color(0xFF1B1630)],
+        ),
+      ),
+      child: _MobileFirstExperienceFrame(
+        child: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 10, 24, 40),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: IconButton(
+                    onPressed: onBack,
+                    icon: const Icon(
+                      LucideIcons.chevronLeft,
+                      color: Colors.white,
+                      size: 34,
                     ),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Text(
-                          '${session.formScore}',
-                          style: const TextStyle(
-                            color: Color(0xFFF0F1F7),
-                            fontSize: 28,
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: -1.5,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Here are your best moments',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 26,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -0.7,
+                  ),
+                ),
+                const SizedBox(height: 18),
+                SizedBox(
+                  height: 468,
+                  child: ListView(
+                    scrollDirection: Axis.horizontal,
+                    clipBehavior: Clip.none,
+                    children: [
+                      const SizedBox(width: 8),
+                      const _MiniMomentCard(
+                        title: 'Session cover',
+                        accent: [Color(0xFFEDEFF6), Color(0xFFB8D4D3)],
+                      ),
+                      const SizedBox(width: 18),
+                      _BestMomentCard(session: session),
+                      const SizedBox(width: 18),
+                      const _MiniMomentCard(
+                        title: 'Coach notes',
+                        accent: [Color(0xFF6E6A17), Color(0xFF242E1D)],
+                      ),
+                      const SizedBox(width: 8),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 18),
+                SizedBox(
+                  height: 58,
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      final String shareText =
+                          'Just pulled ${session.repCount} reps at ${session.centerName} with Cult Eidos. Form checked. @cultfit';
+                      final String? path = session.shareableVideoPath;
+                      if (path != null && path.isNotEmpty) {
+                        final Uri? uri = Uri.tryParse(path);
+                        if (kIsWeb &&
+                            (uri == null ||
+                                (!uri.hasScheme ||
+                                    (uri.scheme != 'http' && uri.scheme != 'https')))) {
+                          await Share.share(shareText);
+                        } else {
+                          await Share.shareXFiles([XFile(path)], text: shareText);
+                        }
+                      } else {
+                        await Share.share(shareText);
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: AppPalette.emberHighlight,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: const Text(
+                      'SHARE THEM NOW',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 1.1,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 42),
+                const Text(
+                  'All the recordings from today',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 21,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.5,
+                  ),
+                ),
+                const SizedBox(height: 18),
+                SizedBox(
+                  height: 156,
+                  child: ListView(
+                    scrollDirection: Axis.horizontal,
+                    children: [
+                      _RecordingStripCard(
+                        title: 'Set 1',
+                        subtitle: 'Deadlift',
+                        videoPath: session.shareableVideoPath,
+                      ),
+                      const SizedBox(width: 12),
+                      const _RecordingStripCard(
+                        title: 'Set 2',
+                        subtitle: 'Sprint prep',
+                        videoPath: null,
+                      ),
+                      const SizedBox(width: 12),
+                      const _RecordingStripCard(
+                        title: 'Rep 3',
+                        subtitle: 'Fast pull',
+                        videoPath: null,
+                      ),
+                      const SizedBox(width: 12),
+                      const _RecordingStripCard(
+                        title: 'Rep 4',
+                        subtitle: 'Coach view',
+                        videoPath: null,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 42),
+                const Text(
+                  'Today’s (a session’s) Form analysis',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 21,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.5,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    SizedBox(
+                      width: 180,
+                      height: 180,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          VoidFormScoreRing(score: session.formScore),
+                          Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                '${session.formScore}',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 34,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                              const Text(
+                                "TODAY'S\nFORM SCORE",
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: Color(0xFFC2A8FF),
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w800,
+                                  letterSpacing: 0.8,
+                                ),
+                              ),
+                            ],
                           ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        session.insight,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          height: 1.25,
                         ),
-                        const Text(
-                          'form score',
-                          style: TextStyle(
-                            color: Color(0x55FFFFFF),
-                            fontSize: 11,
-                            fontWeight: FontWeight.w300,
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
                   ],
                 ),
+                const SizedBox(height: 16),
+                Text(
+                  '↑ ${math.max(2, session.formScore ~/ 15)} from last Form score',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                _MetricLineItem(
+                  icon: LucideIcons.weight,
+                  value: '${math.max(90, session.formScore + 20)}',
+                  suffix: 'KGS',
+                  trend: '↑${math.max(120, session.repCount * 10)}',
+                ),
+                const SizedBox(height: 18),
+                _MetricLineItem(
+                  icon: LucideIcons.flame,
+                  value: '${math.max(220, session.repCount * 18)}',
+                  suffix: 'CALS',
+                  trend: '↑${math.max(20, session.formScore ~/ 4)}',
+                ),
+                const SizedBox(height: 18),
+                _MetricLineItem(
+                  icon: LucideIcons.trophy,
+                  value: '${math.max(3, session.repCount ~/ 2)}',
+                  suffix: 'MOVEMENTS\nDONE',
+                ),
+                const SizedBox(height: 32),
+                _ShareAssetActions(
+                  session: session,
+                  onRecordNext: onRecordNext,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BestMomentCard extends StatelessWidget {
+  const _BestMomentCard({required this.session});
+
+  final VisionSessionData session;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 322,
+      padding: const EdgeInsets.fromLTRB(14, 18, 14, 18),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(26),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF4C62C7), Color(0xFFB0A13F)],
+        ),
+      ),
+      child: Stack(
+        children: [
+          Positioned(
+            top: 0,
+            right: 0,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFF644D),
+                borderRadius: BorderRadius.circular(999),
               ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 14,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0x0F7B56C2),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: const Color(0x287B56C2)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+              child: Text(
+                'Best Rep:${session.repCount}',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+          ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Stack(
+                    fit: StackFit.expand,
                     children: [
-                      const Text(
-                        'FROM THIS SESSION',
-                        style: TextStyle(
-                          color: Color(0x66C2A8FF),
-                          fontSize: 9,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: 1.4,
+                      session.shareableVideoPath == null ||
+                              session.shareableVideoPath!.isEmpty
+                          ? const _SubmissionPreviewFallback()
+                          : _ShareAssetVideoArtwork(
+                              videoPath: session.shareableVideoPath,
+                            ),
+                      const Positioned(
+                        top: 12,
+                        left: 12,
+                        child: Icon(LucideIcons.x, color: Colors.white, size: 22),
+                      ),
+                      Positioned(
+                        left: 0,
+                        bottom: 0,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 12,
+                          ),
+                          color: const Color(0xFFFF614E),
+                          child: Text(
+                            'PR:${math.max(150, session.formScore + 60)}kg\nDuration: 02:00:50',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              height: 1.5,
+                            ),
+                          ),
                         ),
                       ),
-                      const SizedBox(height: 6),
-                      Text(
-                        session.insight,
-                        style: const TextStyle(
-                          color: Color(0x88FFFFFF),
-                          fontSize: 13,
-                          fontWeight: FontWeight.w400,
-                          height: 1.6,
-                          letterSpacing: -0.2,
+                      Positioned(
+                        right: 12,
+                        bottom: 18,
+                        child: Container(
+                          width: 84,
+                          height: 84,
+                          decoration: const BoxDecoration(
+                            color: Color(0xFF4160DE),
+                            shape: BoxShape.circle,
+                          ),
+                          alignment: Alignment.center,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                '${session.formScore}',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 26,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              const Text(
+                                'Form score',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ],
                   ),
                 ),
               ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 20, 20, 40),
-                child: _ShareAssetActions(
-                  session: session,
-                  onRecordNext: onRecordNext,
-                ),
-              ),
             ],
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MiniMomentCard extends StatelessWidget {
+  const _MiniMomentCard({
+    required this.title,
+    required this.accent,
+  });
+
+  final String title;
+  final List<Color> accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 88,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24),
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: accent,
         ),
       ),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          const PreviewCardBackdrop(),
+          Positioned(
+            left: 12,
+            right: 12,
+            bottom: 14,
+            child: Text(
+              title,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RecordingStripCard extends StatelessWidget {
+  const _RecordingStripCard({
+    required this.title,
+    required this.subtitle,
+    required this.videoPath,
+  });
+
+  final String title;
+  final String subtitle;
+  final String? videoPath;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 124,
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF00E28E)),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            videoPath == null || videoPath!.isEmpty
+                ? const _SubmissionPreviewFallback()
+                : _ShareAssetVideoArtwork(videoPath: videoPath),
+            Positioned(
+              left: 12,
+              right: 12,
+              bottom: 12,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(
+                      color: AppPalette.n100,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MetricLineItem extends StatelessWidget {
+  const _MetricLineItem({
+    required this.icon,
+    required this.value,
+    required this.suffix,
+    this.trend,
+  });
+
+  final IconData icon;
+  final String value;
+  final String suffix;
+  final String? trend;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Container(
+          width: 84,
+          height: 84,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white.withValues(alpha: 0.05),
+          ),
+          alignment: Alignment.center,
+          child: Icon(icon, color: Colors.white, size: 30),
+        ),
+        const SizedBox(width: 18),
+        Text(
+          value,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 38,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (trend != null)
+              Text(
+                trend!,
+                style: const TextStyle(
+                  color: AppPalette.passBright,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            Text(
+              suffix,
+              style: const TextStyle(
+                color: AppPalette.n200,
+                fontSize: 22,
+                fontWeight: FontWeight.w800,
+                height: 1,
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }
@@ -3374,6 +4882,113 @@ class _SubmissionPreviewFallback extends StatelessWidget {
         const PreviewCardBackdrop(),
         Container(color: const Color.fromRGBO(7, 8, 15, 0.18)),
       ],
+    );
+  }
+}
+
+class _ShareAssetVideoArtwork extends StatefulWidget {
+  const _ShareAssetVideoArtwork({required this.videoPath});
+
+  final String? videoPath;
+
+  @override
+  State<_ShareAssetVideoArtwork> createState() => _ShareAssetVideoArtworkState();
+}
+
+class _ShareAssetVideoArtworkState extends State<_ShareAssetVideoArtwork> {
+  VideoPlayerController? _controller;
+  Future<void>? _initializeFuture;
+  bool _failedToLoad = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeVideo();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ShareAssetVideoArtwork oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.videoPath != widget.videoPath) {
+      _disposeController();
+      _initializeVideo();
+    }
+  }
+
+  @override
+  void dispose() {
+    _disposeController();
+    super.dispose();
+  }
+
+  void _initializeVideo() {
+    _failedToLoad = false;
+    final String? path = widget.videoPath;
+    if (path == null || path.isEmpty) {
+      _failedToLoad = true;
+      return;
+    }
+    _controller = createVideoControllerForPath(path);
+    if (_controller == null) {
+      _failedToLoad = true;
+      return;
+    }
+    _initializeFuture = _controller!.initialize().then((_) async {
+      await _controller!.setVolume(0);
+      await _controller!.setLooping(true);
+      await _controller!.play();
+    }).catchError((_) {
+      if (mounted) {
+        setState(() {
+          _failedToLoad = true;
+        });
+      } else {
+        _failedToLoad = true;
+      }
+    });
+  }
+
+  void _disposeController() {
+    final VideoPlayerController? controller = _controller;
+    _controller = null;
+    _initializeFuture = null;
+    controller?.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.videoPath == null || widget.videoPath!.isEmpty || _failedToLoad) {
+      return const _SubmissionPreviewFallback();
+    }
+    return FutureBuilder<void>(
+      future: _initializeFuture,
+      builder: (context, snapshot) {
+        final VideoPlayerController? controller = _controller;
+        if (controller == null ||
+            snapshot.connectionState != ConnectionState.done ||
+            !controller.value.isInitialized) {
+          return const Center(
+            child: SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(
+                strokeWidth: 1.5,
+                valueColor: AlwaysStoppedAnimation<Color>(
+                  Color.fromRGBO(255, 255, 255, 0.2),
+                ),
+              ),
+            ),
+          );
+        }
+        return FittedBox(
+          fit: BoxFit.cover,
+          child: SizedBox(
+            width: controller.value.size.width,
+            height: controller.value.size.height,
+            child: VideoPlayer(controller),
+          ),
+        );
+      },
     );
   }
 }
@@ -3557,59 +5172,6 @@ class _ShareAssetVideoCardState extends State<_ShareAssetVideoCard> {
   }
 }
 
-class _CueSummaryChip extends StatelessWidget {
-  const _CueSummaryChip({required this.cue});
-
-  final SessionCueSummary cue;
-
-  @override
-  Widget build(BuildContext context) {
-    final bool isPass = cue.state == CueState.pass;
-    final Color fill = isPass
-        ? const Color(0x1A00875A)
-        : const Color(0x1AB86000);
-    final Color border = isPass
-        ? const Color(0x3300C47A)
-        : const Color(0x33E08840);
-    final Color foreground = isPass
-        ? const Color(0xFF00C47A)
-        : const Color(0xFFE08840);
-
-    return Container(
-      height: 38,
-      decoration: BoxDecoration(
-        color: fill,
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: border),
-      ),
-      child: Center(
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              isPass ? '✅' : '⚠️',
-              style: const TextStyle(fontSize: 12),
-            ),
-            const SizedBox(width: 6),
-            Flexible(
-              child: Text(
-                cue.label.toUpperCase(),
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: foreground,
-                  fontSize: 9,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.8,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _ShareAssetActions extends StatelessWidget {
   const _ShareAssetActions({
     required this.session,
@@ -3697,7 +5259,7 @@ class _ShareAssetActions extends StatelessWidget {
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
           child: const Text(
-            'Record another set →',
+            'End session and reset →',
             style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w400,
@@ -4205,12 +5767,12 @@ class _MacOSCameraPreviewState extends State<MacOSCameraPreview> {
   static const MethodChannel _cameraChannel = MethodChannel('camera_macos');
 
   CameraMacOSController? _controller;
-  late final Future<_CameraSessionConfig> _cameraSessionFuture;
+  late Future<_CameraSessionConfig> _cameraSessionFuture;
 
   @override
   void initState() {
     super.initState();
-    _cameraSessionFuture = _prepareCameraSession();
+    _resetCameraSession();
   }
 
   @override
@@ -4250,15 +5812,20 @@ class _MacOSCameraPreviewState extends State<MacOSCameraPreview> {
         }
 
         return CameraMacOSView(
+          key: ValueKey<String?>('camera-${session.preferredCamera.deviceId}'),
           deviceId: session.preferredCamera.deviceId,
           fit: BoxFit.cover,
           cameraMode: CameraMacOSMode.photo,
-          usePlatformView: true,
+          usePlatformView: false,
           enableAudio: false,
           orientation: CameraOrientation.orientation0deg,
           isVideoMirrored: false,
           onCameraInizialized: (CameraMacOSController controller) {
-            _controller ??= controller;
+            if (!identical(_controller, controller)) {
+              _controller?.setPoseResultListener(null);
+              _controller?.destroy();
+              _controller = controller;
+            }
             controller.setPoseResultListener(widget.onPoseResult);
             unawaited(
               controller.setOrientation(CameraOrientation.orientation0deg),
@@ -4272,10 +5839,10 @@ class _MacOSCameraPreviewState extends State<MacOSCameraPreview> {
                 body: _cameraErrorMessage(error),
                 actionLabel: _looksLikePermissionError(error)
                     ? 'Open Camera Settings'
-                    : null,
+                    : 'Try camera again',
                 onAction: _looksLikePermissionError(error)
                     ? _openCameraPreferences
-                    : null,
+                    : _retryCameraSession,
               );
             }
             return const _CameraBackdropMessage(
@@ -4292,6 +5859,20 @@ class _MacOSCameraPreviewState extends State<MacOSCameraPreview> {
         );
       },
     );
+  }
+
+  void _resetCameraSession() {
+    _cameraSessionFuture = _prepareCameraSession();
+  }
+
+  void _retryCameraSession() {
+    _controller?.setPoseResultListener(null);
+    _controller?.destroy();
+    _controller = null;
+    if (!mounted) {
+      return;
+    }
+    setState(_resetCameraSession);
   }
 
   Future<_CameraSessionConfig> _prepareCameraSession() async {
@@ -4713,11 +6294,13 @@ class _RecordingPillState extends State<RecordingPill> {
 
   @override
   Widget build(BuildContext context) {
-    return GlassPanel(
+    return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-      borderRadius: 999,
-      backgroundColor: AppPalette.redGlass,
-      borderColor: AppPalette.redBorder,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: const Color(0xFFF1C9D2)),
+      ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -4745,7 +6328,7 @@ class _RecordingPillState extends State<RecordingPill> {
           const Text(
             'REC',
             style: TextStyle(
-              color: Color(0xFFFF6680),
+              color: AppPalette.redBright,
               fontSize: 10,
               fontWeight: FontWeight.w700,
               letterSpacing: 1.8,
@@ -4757,49 +6340,9 @@ class _RecordingPillState extends State<RecordingPill> {
           Text(
             widget.timeLabel,
             style: const TextStyle(
-              color: AppPalette.n400,
+              color: kKioskInkMuted,
               fontSize: 11,
               fontWeight: FontWeight.w400,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _RecordingIntroBanner extends StatelessWidget {
-  const _RecordingIntroBanner({required this.userName});
-
-  final String userName;
-
-  @override
-  Widget build(BuildContext context) {
-    return GlassPanel(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      borderRadius: 18,
-      backgroundColor: AppPalette.glass2,
-      borderColor: AppPalette.glassBorder,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Hello $userName',
-            style: const TextStyle(
-              color: AppPalette.n50,
-              fontSize: 14,
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.2,
-            ),
-          ),
-          const SizedBox(height: 2),
-          const Text(
-            "Let's get started.",
-            style: TextStyle(
-              color: AppPalette.n400,
-              fontSize: 11,
-              fontWeight: FontWeight.w500,
-              letterSpacing: -0.1,
             ),
           ),
         ],
@@ -4815,18 +6358,20 @@ class _RepCounterPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GlassPanel(
+    return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      borderRadius: 18,
-      backgroundColor: AppPalette.glass2,
-      borderColor: AppPalette.glassBorder,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: kKioskStroke),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
             'REPS',
             style: TextStyle(
-              color: AppPalette.n500,
+              color: kKioskInkMuted,
               fontSize: 9,
               fontWeight: FontWeight.w700,
               letterSpacing: 1.2,
@@ -4836,7 +6381,7 @@ class _RepCounterPill extends StatelessWidget {
           Text(
             repCount.toString().padLeft(2, '0'),
             style: const TextStyle(
-              color: AppPalette.n50,
+              color: kKioskInk,
               fontSize: 16,
               fontWeight: FontWeight.w800,
               letterSpacing: -0.4,
@@ -4861,11 +6406,12 @@ class _RecordingWarningBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GlassPanel(
+    return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      backgroundColor: background,
-      borderColor: Colors.transparent,
-      borderRadius: 16,
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(16),
+      ),
       child: Text(
         text,
         style: TextStyle(
@@ -4890,12 +6436,12 @@ class _CuePillRow extends StatelessWidget {
         final SessionCueSummary cue = cues[index];
         final bool isMuted = cue.state == CueState.neutral;
         final Color fill = isMuted
-            ? const Color.fromRGBO(255, 255, 255, 0.08)
+            ? Colors.white
             : cue.state == CueState.pass
-                ? AppPalette.passGlass
-                : AppPalette.warnGlass;
+                ? const Color(0xFFECF9F1)
+                : const Color(0xFFFFF0E0);
         final Color textColor = isMuted
-            ? const Color.fromRGBO(255, 255, 255, 0.35)
+            ? kKioskInkMuted
             : cue.state == CueState.pass
                 ? AppPalette.passBright
                 : AppPalette.warnBright;
@@ -4908,6 +6454,7 @@ class _CuePillRow extends StatelessWidget {
               decoration: BoxDecoration(
                 color: fill,
                 borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: kKioskStroke),
               ),
               alignment: Alignment.center,
               child: Text(
@@ -5018,23 +6565,16 @@ class GlassStopButton extends StatelessWidget {
         height: 74,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: AppPalette.glass2,
-          border: Border.all(color: AppPalette.glassBorder),
-          boxShadow: const [
-            BoxShadow(
-              color: Color.fromRGBO(0, 0, 0, 0.32),
-              blurRadius: 28,
-              spreadRadius: 1,
-            ),
-          ],
+          color: const Color(0xFFC8C5C3),
+          border: Border.all(color: const Color(0xFFB3AEAA)),
         ),
         alignment: Alignment.center,
         child: Container(
           width: 22,
           height: 22,
           decoration: BoxDecoration(
-            color: AppPalette.n300,
-            borderRadius: BorderRadius.circular(4),
+            color: Colors.white,
+            shape: BoxShape.circle,
           ),
         ),
       ),
@@ -5572,19 +7112,13 @@ class PrimaryButton extends StatelessWidget {
           decoration: BoxDecoration(
             color: AppPalette.n50,
             borderRadius: BorderRadius.circular(24),
-            boxShadow: const [
-              BoxShadow(
-                color: Color.fromRGBO(240, 241, 247, 0.12),
-                blurRadius: 20,
-                spreadRadius: 1,
-              ),
-            ],
+            border: Border.all(color: const Color(0xFFF1E3D9)),
           ),
           alignment: Alignment.center,
           child: Text(
             label,
             style: const TextStyle(
-              color: AppPalette.voidColor,
+              color: kKioskButtonAccent,
               fontSize: 14,
               fontWeight: FontWeight.w700,
               letterSpacing: -0.01,

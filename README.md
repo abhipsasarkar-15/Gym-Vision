@@ -1,17 +1,29 @@
 # cult_vision_kiosk_flutter
 
-A new Flutter project.
+Cult Vision Flutter native prototype for kiosk recording, in-workout coaching, and shareable result flows.
 
-## Getting Started
+## Run with Gemini voice coaching
 
-This project is a starting point for a Flutter application.
+The workout coach now supports Gemini-generated spoken cues. The API key is intentionally not stored in source.
 
-A few resources to get you started if this is your first Flutter project:
+Example local build:
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+```bash
+flutter build macos \
+  --dart-define=GEMINI_API_KEY=YOUR_KEY \
+  --dart-define=GEMINI_MODEL=gemini-2.5-flash
+```
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+Example local run:
+
+```bash
+flutter run -d macos \
+  --dart-define=GEMINI_API_KEY=YOUR_KEY \
+  --dart-define=GEMINI_MODEL=gemini-2.5-flash
+```
+
+Notes:
+
+- The current default Gemini model in code is `gemini-2.5-flash`.
+- Voice output is spoken natively by the device on macOS.
+- The API key should be passed at runtime and never committed.
