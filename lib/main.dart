@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:camera/camera.dart' as mobile_camera;
 import 'package:camera_macos/camera_macos.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
@@ -31,8 +32,9 @@ const bool kStartInRecording = bool.fromEnvironment(
 const String kGeminiApiKey = String.fromEnvironment('GEMINI_API_KEY');
 const String kGeminiModel = String.fromEnvironment(
   'GEMINI_MODEL',
-  defaultValue: 'gemini-2.5-flash',
+  defaultValue: 'gemini-3-flash-preview',
 );
+const String kGeminiFallbackModel = 'gemini-2.5-flash';
 const Color kKioskPaper = Color(0xFFE8E6E4);
 const Color kKioskPaperSoft = Color(0xFFF5F3F1);
 const Color kKioskInk = Color(0xFF18090B);
@@ -1510,6 +1512,8 @@ class _TipsScreenState extends State<TipsScreen> {
               ),
             ),
           ],
+          const SizedBox(height: 22),
+          const WorkoutReferenceThumbnail(title: 'Deadlift demo'),
           const Spacer(),
           if (widget.cameraError != null)
             Padding(
@@ -1643,6 +1647,9 @@ class _RecordingScreenState extends State<RecordingScreen> {
   RecordingPoseAssessment? _latestAssessment;
   DateTime? _lastPoseUpdateAt;
   int _completedRepCount = 0;
+  int _scriptedCueIndex = 0;
+  Duration _scriptedCueElapsed = Duration.zero;
+  Duration _scriptedRepElapsed = Duration.zero;
   bool _repBottomReached = false;
   int _lastRepTimestampMs = 0;
   final Map<String, int> _cueObservedCounts = <String, int>{
@@ -1657,12 +1664,16 @@ class _RecordingScreenState extends State<RecordingScreen> {
   };
   late final VoiceCoachController _voiceCoach;
 
+  bool get _supportsLivePose =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
+
   @override
   void initState() {
     super.initState();
     _voiceCoach = VoiceCoachController(
       apiKey: kGeminiApiKey,
       model: kGeminiModel,
+      fallbackModel: kGeminiFallbackModel,
     );
     _timer = Timer.periodic(const Duration(milliseconds: 250), (_) {
       if (!mounted) {
@@ -1697,6 +1708,9 @@ class _RecordingScreenState extends State<RecordingScreen> {
   LiveCoachingCue get _activeCue {
     if (_recordingSubState == RecordingSubState.detecting) {
       return kLiveCoachingPlan.first;
+    }
+    if (!_supportsLivePose) {
+      return kLiveCoachingPlan[_scriptedCueIndex % kLiveCoachingPlan.length];
     }
     final List<SessionCueSummary> cues = _currentCueSummaries;
     SessionCueSummary? warningCue;
@@ -1747,6 +1761,23 @@ class _RecordingScreenState extends State<RecordingScreen> {
   }
 
   List<SessionCueSummary> get _currentCueSummaries {
+    if (!_supportsLivePose && _recordingSubState == RecordingSubState.active) {
+      final int cueStep = _scriptedCueIndex % 3;
+      return [
+        SessionCueSummary(
+          label: 'Back',
+          state: cueStep == 0 ? CueState.warn : CueState.pass,
+        ),
+        SessionCueSummary(
+          label: 'Hinge',
+          state: cueStep == 1 ? CueState.warn : CueState.pass,
+        ),
+        SessionCueSummary(
+          label: 'Lock',
+          state: cueStep == 2 ? CueState.warn : CueState.pass,
+        ),
+      ];
+    }
     if (_recordingSubState != RecordingSubState.active || _poseConfidence < 0.65) {
       return _neutralCues;
     }
@@ -1775,6 +1806,13 @@ class _RecordingScreenState extends State<RecordingScreen> {
     switch (_recordingSubState) {
       case RecordingSubState.detecting:
         _detectingElapsed += step;
+        if (!_supportsLivePose && _detectingElapsed >= const Duration(seconds: 1)) {
+          _recordingSubState = RecordingSubState.active;
+          _detectingElapsed = Duration.zero;
+          _idleElapsed = Duration.zero;
+          _poseConfidence = 0.85;
+          return;
+        }
         if (_poseConfidence > 0.65) {
           _consecutiveHighConfidenceFrames += 1;
         } else {
@@ -1789,6 +1827,49 @@ class _RecordingScreenState extends State<RecordingScreen> {
           _showDetectingRetry = true;
         }
       case RecordingSubState.active:
+        if (!_supportsLivePose) {
+          _recordingElapsed += step;
+          _idleElapsed += step;
+          _scriptedCueElapsed += step;
+          _scriptedRepElapsed += step;
+          _poseConfidence = 0.85;
+          _edgePulseColor = _colorForState(_activeCue.state);
+          if (_scriptedCueElapsed >= const Duration(seconds: 4)) {
+            _scriptedCueElapsed = Duration.zero;
+            _scriptedCueIndex = (_scriptedCueIndex + 1) % kLiveCoachingPlan.length;
+            unawaited(
+              _voiceCoach.maybeSpeak(
+                enabled: !_muted,
+                exerciseName: 'Deadlift',
+                repCount: _repCount,
+                poseConfidence: _poseConfidence,
+                activeCueTitle: _activeCue.title,
+                activeCommand: _activeCue.command,
+                activeDetail: _activeCue.detail,
+                cues: _currentCueSummaries
+                    .map(
+                      (cue) => <String, String>{
+                        'label': cue.label,
+                        'state': cue.state.name,
+                      },
+                    )
+                    .toList(),
+                minGap: const Duration(seconds: 4),
+              ),
+            );
+          }
+          if (_scriptedRepElapsed >= const Duration(seconds: 6)) {
+            _scriptedRepElapsed = Duration.zero;
+            _completedRepCount += 1;
+            _idleElapsed = Duration.zero;
+            _showPositiveNudge('Clean rep.');
+          }
+          if (_idleElapsed >= const Duration(seconds: 120)) {
+            _showIdleOverlay = true;
+            _idleOverlayRemaining = const Duration(seconds: 120);
+          }
+          return;
+        }
         _recordingElapsed += step;
         _idleElapsed += step;
         if (_poseConfidence >= 0.65) {
@@ -2299,6 +2380,14 @@ class _RecordingScreenState extends State<RecordingScreen> {
                               muted: _muted || isPaused || showLowConfidenceWarning,
                             ),
                           ),
+                        const Positioned(
+                          right: 14,
+                          top: 88,
+                          child: WorkoutReferenceThumbnail(
+                            title: 'Deadlift demo',
+                            compact: true,
+                          ),
+                        ),
                         if (_positiveNudge != null && !showLowConfidenceWarning && !isPaused)
                           Positioned(
                             top: 74,
@@ -3932,6 +4021,179 @@ class _CameraInstructionPill extends StatelessWidget {
       ),
     );
   }
+}
+
+class WorkoutReferenceThumbnail extends StatefulWidget {
+  const WorkoutReferenceThumbnail({
+    super.key,
+    required this.title,
+    this.compact = false,
+  });
+
+  final String title;
+  final bool compact;
+
+  @override
+  State<WorkoutReferenceThumbnail> createState() =>
+      _WorkoutReferenceThumbnailState();
+}
+
+class _WorkoutReferenceThumbnailState extends State<WorkoutReferenceThumbnail>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2200),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final double width = widget.compact ? 88 : 132;
+    final double height = widget.compact ? 132 : 196;
+
+    return Container(
+      width: width,
+      height: height,
+      padding: const EdgeInsets.all(6),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: widget.compact ? 0.9 : 1),
+        borderRadius: BorderRadius.circular(widget.compact ? 18 : 22),
+        border: Border.all(color: kKioskStroke),
+        boxShadow: widget.compact
+            ? null
+            : const [
+                BoxShadow(
+                  color: Color.fromRGBO(24, 9, 11, 0.06),
+                  blurRadius: 18,
+                  spreadRadius: 0.4,
+                ),
+              ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFF0E8),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              widget.title,
+              style: TextStyle(
+                color: kKioskButtonAccent,
+                fontSize: widget.compact ? 9 : 10,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.2,
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(widget.compact ? 14 : 16),
+              child: AnimatedBuilder(
+                animation: _controller,
+                builder: (context, _) {
+                  return CustomPaint(
+                    painter: _WorkoutReferencePainter(progress: _controller.value),
+                    child: const SizedBox.expand(),
+                  );
+                },
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _WorkoutReferencePainter extends CustomPainter {
+  const _WorkoutReferencePainter({required this.progress});
+
+  final double progress;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Paint background = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [Color(0xFFFBF4A2), Color(0xFF4D6DE7)],
+      ).createShader(Offset.zero & size);
+    canvas.drawRect(Offset.zero & size, background);
+
+    final Paint floorPaint = Paint()..color = const Color(0x1A18090B);
+    canvas.drawRect(
+      Rect.fromLTWH(0, size.height * 0.74, size.width, size.height * 0.26),
+      floorPaint,
+    );
+
+    final double phase = Curves.easeInOut.transform(progress);
+    final double torsoLean = lerpDouble(30, 8, phase)!;
+    final double hipDrop = lerpDouble(0.18, 0.05, phase)!;
+    final double centerX = size.width * 0.48;
+    final double hipY = size.height * (0.62 + hipDrop);
+    final double shoulderY = hipY - size.height * 0.26;
+    final double shoulderX = centerX - torsoLean * 0.7;
+    final double headX = shoulderX + 8;
+    final double headY = shoulderY - 18;
+
+    final Offset head = Offset(headX, headY);
+    final Offset shoulder = Offset(shoulderX, shoulderY);
+    final Offset hip = Offset(centerX, hipY);
+    final Offset knee = Offset(centerX + 12, size.height * 0.76);
+    final Offset ankle = Offset(centerX + 16, size.height * 0.92);
+    final Offset rearKnee = Offset(centerX - 22, size.height * 0.76);
+    final Offset rearAnkle = Offset(centerX - 26, size.height * 0.92);
+    final Offset leadHand = Offset(shoulderX + 34, hipY - 8);
+    final Offset rearHand = Offset(shoulderX - 6, hipY - 4);
+    final double barY = hipY - 2;
+
+    final Paint bodyPaint = Paint()
+      ..color = const Color(0xFF18090B)
+      ..strokeWidth = 6
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke;
+    final Paint jointPaint = Paint()..color = const Color(0xFF18090B);
+    final Paint barPaint = Paint()
+      ..color = const Color(0xFFFF644D)
+      ..strokeWidth = 5
+      ..strokeCap = StrokeCap.round;
+
+    canvas.drawCircle(head, 10, jointPaint);
+    canvas.drawLine(head.translate(0, 9), shoulder, bodyPaint);
+    canvas.drawLine(shoulder, hip, bodyPaint);
+    canvas.drawLine(shoulder, rearHand, bodyPaint);
+    canvas.drawLine(shoulder, leadHand, bodyPaint);
+    canvas.drawLine(hip, knee, bodyPaint);
+    canvas.drawLine(knee, ankle, bodyPaint);
+    canvas.drawLine(hip, rearKnee, bodyPaint);
+    canvas.drawLine(rearKnee, rearAnkle, bodyPaint);
+    canvas.drawLine(
+      Offset(size.width * 0.18, barY),
+      Offset(size.width * 0.78, barY),
+      barPaint,
+    );
+    canvas.drawCircle(Offset(size.width * 0.14, barY), 9, barPaint);
+    canvas.drawCircle(Offset(size.width * 0.82, barY), 9, barPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _WorkoutReferencePainter oldDelegate) =>
+      oldDelegate.progress != progress;
 }
 
 class _CoachStrip extends StatelessWidget {
@@ -5714,7 +5976,7 @@ class RecordingCameraBackdrop extends StatelessWidget {
   Widget build(BuildContext context) {
     final Widget preview = Theme.of(context).platform == TargetPlatform.macOS
         ? MacOSCameraPreview(onPoseResult: onPoseResult)
-        : const SimulatedCameraPreview();
+        : const MobileCameraPreview();
 
     return Stack(
       fit: StackFit.expand,
@@ -5729,6 +5991,130 @@ class RecordingCameraBackdrop extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class MobileCameraPreview extends StatefulWidget {
+  const MobileCameraPreview({super.key});
+
+  @override
+  State<MobileCameraPreview> createState() => _MobileCameraPreviewState();
+}
+
+class _MobileCameraPreviewState extends State<MobileCameraPreview> {
+  mobile_camera.CameraController? _controller;
+  Future<void>? _initializeFuture;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeCamera();
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _initializeCamera() async {
+    setState(() {
+      _errorMessage = null;
+      _initializeFuture = null;
+    });
+
+    try {
+      final List<mobile_camera.CameraDescription> cameras =
+          await mobile_camera.availableCameras();
+      if (cameras.isEmpty) {
+        setState(() {
+          _errorMessage = 'No camera found on this device.';
+        });
+        return;
+      }
+
+      final mobile_camera.CameraDescription selectedCamera =
+          cameras.firstWhere(
+            (camera) => camera.lensDirection == mobile_camera.CameraLensDirection.back,
+            orElse: () => cameras.first,
+          );
+
+      final mobile_camera.CameraController controller =
+          mobile_camera.CameraController(
+            selectedCamera,
+            mobile_camera.ResolutionPreset.medium,
+            enableAudio: false,
+          );
+
+      _controller?.dispose();
+      _controller = controller;
+      final Future<void> initialize = controller.initialize().then((_) async {
+        await controller.lockCaptureOrientation(
+          DeviceOrientation.portraitUp,
+        );
+      });
+
+      setState(() {
+        _initializeFuture = initialize;
+      });
+      await initialize;
+      if (mounted) {
+        setState(() {});
+      }
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _errorMessage = error.toString();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_errorMessage != null) {
+      return _CameraBackdropMessage(
+        title: 'Camera unavailable',
+        body: _errorMessage!,
+        actionLabel: 'Try camera again',
+        onAction: _initializeCamera,
+      );
+    }
+
+    if (_initializeFuture == null) {
+      return const _CameraBackdropMessage(
+        title: 'Opening camera',
+        body: 'Starting the camera.',
+      );
+    }
+
+    return FutureBuilder<void>(
+      future: _initializeFuture,
+      builder: (context, snapshot) {
+        final mobile_camera.CameraController? controller = _controller;
+        if (snapshot.connectionState != ConnectionState.done ||
+            controller == null ||
+            !controller.value.isInitialized) {
+          return const _CameraBackdropMessage(
+            title: 'Opening camera',
+            body: 'Starting the camera.',
+          );
+        }
+
+        return ClipRect(
+          child: FittedBox(
+            fit: BoxFit.cover,
+            child: SizedBox(
+              width: controller.value.previewSize?.height ?? 1080,
+              height: controller.value.previewSize?.width ?? 1920,
+              child: mobile_camera.CameraPreview(controller),
+            ),
+          ),
+        );
+      },
     );
   }
 }

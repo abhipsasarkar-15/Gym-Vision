@@ -31,7 +31,7 @@ EXTERNAL SOURCES:
     :path: Flutter/ephemeral/.symlinks/plugins/video_player_avfoundation/darwin
 
 SPEC CHECKSUMS:
-  camera_macos: c2603f5eed16f05076cf17e12030d2ce55a77839
+  camera_macos: 3c196d72294f7ed08957f20b6a760b84dee422e7
   FlutterMacOS: d0db08ddef1a9af05a5ec4b724367152bb0500b1
   share_plus: 1fa619de8392a4398bfaf176d441853922614e89
   shared_preferences_foundation: 5086985c1d43c5ba4d5e69a4e8083a389e2909e6

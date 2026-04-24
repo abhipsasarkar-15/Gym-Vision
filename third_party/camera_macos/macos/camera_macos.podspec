@@ -16,7 +16,6 @@ A new Flutter plugin project.
   s.source           = { :path => '.' }
   s.source_files     = 'Classes/**/*'
   s.dependency 'FlutterMacOS'
-  s.dependency 'MediaPipeTasksVision'
   s.resources = ['Resources/**/*']
 
   s.platform = :osx, '10.11'

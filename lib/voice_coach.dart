@@ -8,13 +8,16 @@ class VoiceCoachController {
   VoiceCoachController({
     required String apiKey,
     required String model,
+    String? fallbackModel,
   })  : _apiKey = apiKey,
-        _model = model;
+        _model = model,
+        _fallbackModel = fallbackModel;
 
   static const MethodChannel _voiceChannel = MethodChannel('cult_vision_voice');
 
   final String _apiKey;
   final String _model;
+  final String? _fallbackModel;
   final GeminiApiClient _client = createGeminiApiClient();
 
   DateTime? _lastRequestAt;
@@ -43,7 +46,7 @@ class VoiceCoachController {
     _requestInFlight = true;
     _lastRequestAt = now;
     try {
-      final String? line = await _client.generateWorkoutCue(
+      String? line = await _client.generateWorkoutCue(
         GeminiCoachingRequest(
           model: _model,
           apiKey: _apiKey,
@@ -56,6 +59,24 @@ class VoiceCoachController {
           cues: cues,
         ),
       );
+      if ((line == null || line.isEmpty) &&
+          _fallbackModel != null &&
+          _fallbackModel != _model) {
+        final String fallbackModel = _fallbackModel;
+        line = await _client.generateWorkoutCue(
+          GeminiCoachingRequest(
+            model: fallbackModel,
+            apiKey: _apiKey,
+            exerciseName: exerciseName,
+            repCount: repCount,
+            poseConfidence: poseConfidence,
+            activeCueTitle: activeCueTitle,
+            activeCommand: activeCommand,
+            activeDetail: activeDetail,
+            cues: cues,
+          ),
+        );
+      }
       if (line == null || line.isEmpty || line == _lastSpokenLine) {
         return;
       }
